@@ -62,3 +62,87 @@ def test_process_message_persists_and_labels(tmp_path):
     rows = list(db.execute("SELECT uid, classification, label, classifier FROM messages"))
     assert rows == [(10, "client", "Hermes/Client/boarhog", "rule")]
     fake_imap.apply_label.assert_called_once_with(10, "Hermes/Client/boarhog")
+
+
+def test_process_message_archives_promo(tmp_path):
+    from hermes.db import connect, migrate
+    db = connect(tmp_path / "t.sqlite")
+    migrate(db)
+    msg = message_from_bytes((FIXTURES / "promo_amazon.eml").read_bytes())
+    fake_imap = MagicMock()
+    process_message(uid=11, msg=msg, db=db, cfg=_cfg(), imap=fake_imap, llm_classifier=None, drafter=None)
+    fake_imap.apply_label.assert_called_once_with(11, "Hermes/Promo")
+    fake_imap.archive.assert_called_once_with(11)
+
+
+def test_process_message_does_not_archive_client(tmp_path):
+    from hermes.db import connect, migrate
+    db = connect(tmp_path / "t.sqlite")
+    migrate(db)
+    msg = message_from_bytes((FIXTURES / "client_boarhog.eml").read_bytes())
+    fake_imap = MagicMock()
+    process_message(uid=12, msg=msg, db=db, cfg=_cfg(), imap=fake_imap, llm_classifier=None, drafter=None)
+    fake_imap.archive.assert_not_called()
+
+
+def test_received_at_normalizes_rfc2822_to_iso(tmp_path):
+    """The Date header is RFC 2822; we store ISO 8601 so SQLite datetime() works."""
+    from hermes.db import connect, migrate
+    db = connect(tmp_path / "t.sqlite")
+    migrate(db)
+    msg = message_from_bytes((FIXTURES / "client_boarhog.eml").read_bytes())
+    # Sanity: fixture has 'Date: Fri, 02 May 2026 10:00:00 +0000'
+    fake_imap = MagicMock()
+    process_message(uid=13, msg=msg, db=db, cfg=_cfg(), imap=fake_imap, llm_classifier=None, drafter=None)
+    row = db.execute("SELECT received_at FROM messages WHERE uid=13").fetchone()
+    received = row[0]
+    # ISO 8601 starts with YYYY-MM-DD
+    assert received.startswith("2026-05-02"), f"expected ISO start, got {received!r}"
+    # SQLite datetime() must be able to parse it
+    parsed = db.execute("SELECT datetime(?)", (received,)).fetchone()[0]
+    assert parsed is not None, f"datetime() failed to parse {received!r}"
+
+
+def test_first_run_anchors_to_current_max_uid(tmp_path):
+    """Empty DB + IMAP backlog -> don't fetch everything; anchor to current max UID."""
+    from hermes.db import connect, migrate
+    from hermes.mail.daemon import _bootstrap_anchor
+    db = connect(tmp_path / "t.sqlite")
+    migrate(db)
+    fake_imap = MagicMock()
+    fake_imap.current_max_uid.return_value = 9999
+    anchor = _bootstrap_anchor(db, fake_imap)
+    assert anchor == 9999
+    fake_imap.current_max_uid.assert_called_once()
+    # The anchor row must persist so a second call doesn't re-anchor
+    second = _bootstrap_anchor(db, fake_imap)
+    assert second == 9999
+    assert fake_imap.current_max_uid.call_count == 1
+
+
+def test_existing_db_skips_bootstrap(tmp_path):
+    """Non-empty DB -> don't query IMAP for anchor."""
+    from hermes.db import connect, migrate
+    from hermes.mail.daemon import _bootstrap_anchor
+    from datetime import datetime, timezone
+    db = connect(tmp_path / "t.sqlite")
+    migrate(db)
+    db.execute(
+        "INSERT INTO messages(uid, message_id, received_at, sender, classification, classifier) "
+        "VALUES (5, 'mid-5', ?, 'a@b', 'promo', 'rule')",
+        (datetime.now(timezone.utc).isoformat(),),
+    )
+    fake_imap = MagicMock()
+    anchor = _bootstrap_anchor(db, fake_imap)
+    assert anchor == 5
+    fake_imap.current_max_uid.assert_not_called()
+
+
+def test_classify_message_llm_io_failure_marks_classifier_rule():
+    """When classify_llm returns unknown/0.0 (I/O fail), don't claim 'llm' classified it."""
+    msg = message_from_bytes((FIXTURES / "ambiguous.eml").read_bytes())
+    fake_llm = MagicMock(return_value=LLMResult(label="unknown", confidence=0.0, why="ollama error: timeout"))
+    result = classify_message(msg, _cfg(), llm_classifier=fake_llm)
+    assert result.label == "review"
+    assert result.classifier == "rule"
+    assert "llm unavailable" in result.reason

@@ -34,6 +34,16 @@ class ImapClient:
         for msg in self._box.fetch(criteria, mark_seen=False, limit=limit):
             yield msg
 
+    def current_max_uid(self) -> int:
+        """Return the highest UID currently in the watched folder, or 0 if empty.
+        Used to anchor first-run state without fetching the whole backlog."""
+        assert self._box, "call connect() first"
+        typ, data = self._box.client.uid("SEARCH", "ALL")
+        if typ != "OK" or not data or not data[0]:
+            return 0
+        uids = data[0].decode().split()
+        return max((int(u) for u in uids), default=0)
+
     def apply_label(self, uid: int, label: str) -> None:
         """Apply a Gmail label via the X-GM-LABELS IMAP extension."""
         assert self._box, "call connect() first"
