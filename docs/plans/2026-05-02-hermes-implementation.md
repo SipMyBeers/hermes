@@ -143,6 +143,13 @@ addopts = "-v --tb=short"
 
 [tool.ruff]
 line-length = 100
+
+[tool.uv]
+package = true
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 ```
 
 - [ ] **Step 4: Write `.gitignore`**
