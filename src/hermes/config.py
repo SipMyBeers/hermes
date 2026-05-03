@@ -35,6 +35,22 @@ class ClientConfig:
     billing_terms: str
     service_description: str
     active: bool
+    # Optional fields for invoice rendering. Defaults reproduce the v1
+    # generic invoice; override per-client to produce branded invoices.
+    invoice_prefix: str = "INV"
+    invoice_seed: int = 1
+    bill_to_company: str = ""           # falls back to name.title() if empty
+    bill_to_attn: str = ""
+    bill_to_address_lines: tuple[str, ...] = ()
+    description_subtitle: str = ""
+    description_bullets: tuple[str, ...] = ()
+    from_entity: str = ""               # invoice "From" line; defaults to from_name on Config
+    from_subtitle: str = ""
+    from_location: str = ""
+    from_email_display: str = ""
+    payment_methods: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    signoff: str = ""
+    due_text: str = ""                  # if set, prints in place of due_date
 
 
 @dataclass(frozen=True)
@@ -116,6 +132,11 @@ def load_config(
     clients: dict[str, ClientConfig] = {}
     for key, body in c.items():
         try:
+            payment_methods_raw = body.get("payment_methods", [])
+            payment_methods: tuple[tuple[str, tuple[str, ...]], ...] = tuple(
+                (str(pm["label"]), tuple(str(v) for v in pm.get("values", [])))
+                for pm in payment_methods_raw
+            )
             clients[key] = ClientConfig(
                 name=key,
                 domain=body["domain"],
@@ -128,6 +149,24 @@ def load_config(
                     key="active",
                     source=f"{clients_path}:[{key}]",
                 ),
+                invoice_prefix=str(body.get("invoice_prefix", "INV")),
+                invoice_seed=int(body.get("invoice_seed", 1)),
+                bill_to_company=str(body.get("bill_to_company", "")),
+                bill_to_attn=str(body.get("bill_to_attn", "")),
+                bill_to_address_lines=tuple(
+                    str(line) for line in body.get("bill_to_address_lines", [])
+                ),
+                description_subtitle=str(body.get("description_subtitle", "")),
+                description_bullets=tuple(
+                    str(b) for b in body.get("description_bullets", [])
+                ),
+                from_entity=str(body.get("from_entity", "")),
+                from_subtitle=str(body.get("from_subtitle", "")),
+                from_location=str(body.get("from_location", "")),
+                from_email_display=str(body.get("from_email_display", "")),
+                payment_methods=payment_methods,
+                signoff=str(body.get("signoff", "")),
+                due_text=str(body.get("due_text", "")),
             )
         except ConfigError:
             raise

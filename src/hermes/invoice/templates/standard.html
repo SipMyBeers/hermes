@@ -4,65 +4,277 @@
   <meta charset="utf-8">
   <title>Invoice {{ invoice_number }}</title>
   <style>
-    body { font-family: -apple-system, "Helvetica Neue", Arial, sans-serif; color: #222; padding: 48px; }
-    h1 { font-size: 28px; margin: 0 0 4px 0; }
-    .muted { color: #777; font-size: 12px; }
-    .section { margin: 24px 0; }
-    .grid { display: flex; justify-content: space-between; }
-    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
-    th, td { text-align: left; padding: 8px 0; border-bottom: 1px solid #eee; }
-    th { font-size: 11px; text-transform: uppercase; color: #999; letter-spacing: 1px; }
-    .total-row td { border-top: 2px solid #222; border-bottom: none; font-weight: bold; padding-top: 12px; }
-    .right { text-align: right; }
-    .notes { font-size: 12px; color: #555; }
+    @page { size: Letter; margin: 0; }
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, "Helvetica Neue", "Segoe UI", Arial, sans-serif;
+      color: #222;
+      margin: 0;
+      padding: 0;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    .header {
+      background: #1a2433;
+      color: #fff;
+      padding: 36px 56px 28px 56px;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+    }
+    .header h1 {
+      font-size: 30px;
+      letter-spacing: 1px;
+      margin: 0 0 4px 0;
+      font-weight: 700;
+    }
+    .header .invoice-number {
+      color: #e4b53d;
+      font-size: 13px;
+      letter-spacing: 1px;
+      font-weight: 500;
+    }
+    .header-right {
+      text-align: right;
+      color: #fff;
+    }
+    .header-right .date {
+      color: #e4b53d;
+      font-size: 14px;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+    .header-right .due {
+      color: #cfd6df;
+      font-size: 12px;
+    }
+
+    .body {
+      padding: 28px 56px 32px 56px;
+    }
+    .label {
+      font-size: 10px;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      color: #8a8f97;
+      margin-bottom: 8px;
+      font-weight: 600;
+    }
+    .grid {
+      display: flex;
+      justify-content: space-between;
+      gap: 48px;
+      margin-bottom: 22px;
+    }
+    .col-left { flex: 1; }
+    .col-right { flex: 1; text-align: right; }
+    .name { font-size: 16px; font-weight: 700; color: #1a2433; margin-bottom: 2px; }
+    .meta { color: #555; font-size: 13px; }
+
+    table.items {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 8px;
+    }
+    table.items th {
+      text-align: left;
+      font-size: 10px;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      color: #8a8f97;
+      font-weight: 600;
+      padding: 10px 0;
+      border-bottom: 1px solid #d8dde3;
+    }
+    table.items th.right { text-align: right; }
+    table.items td {
+      padding: 12px 0;
+      vertical-align: top;
+      border-bottom: 1px solid #eee;
+    }
+    table.items td.amount {
+      text-align: right;
+      font-weight: 700;
+      font-size: 16px;
+      color: #1a2433;
+      white-space: nowrap;
+    }
+    .desc-title {
+      font-weight: 700;
+      color: #1a2433;
+      font-size: 15px;
+      margin-bottom: 6px;
+    }
+    .desc-subtitle {
+      color: #555;
+      font-size: 13px;
+      margin-bottom: 8px;
+    }
+    .bullets {
+      list-style: none;
+      padding: 0;
+      margin: 6px 0 0 0;
+      color: #555;
+      font-size: 12.5px;
+    }
+    .bullets li { padding: 1px 0; }
+    .bullets li::before { content: "• "; color: #1a2433; }
+
+    .totals {
+      margin-top: 12px;
+      width: 50%;
+      margin-left: auto;
+    }
+    .totals-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 6px 0;
+      color: #555;
+      font-size: 13px;
+    }
+    .totals-row.total {
+      border-top: 2px solid #1a2433;
+      padding-top: 14px;
+      margin-top: 8px;
+    }
+    .totals-row.total .lbl {
+      font-size: 16px;
+      font-weight: 700;
+      color: #1a2433;
+    }
+    .totals-row.total .val {
+      font-size: 22px;
+      font-weight: 700;
+      color: #e4b53d;
+    }
+
+    .section {
+      margin-top: 22px;
+    }
+    .section .label { margin-bottom: 10px; }
+    .pay-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 10px 0;
+      border-bottom: 1px solid #eee;
+    }
+    .pay-row:first-child { border-top: 1px solid #eee; }
+    .pay-row .pay-label {
+      font-weight: 700;
+      color: #1a2433;
+    }
+    .pay-row .pay-values {
+      text-align: right;
+      color: #1a2433;
+      font-weight: 600;
+    }
+    .pay-row .pay-values div { line-height: 1.5; }
+
+    .terms-text {
+      color: #555;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    .terms-text strong { color: #1a2433; }
+
+    .footer {
+      text-align: center;
+      color: #8a8f97;
+      font-size: 12px;
+      padding: 16px 0;
+      border-top: 1px solid #eee;
+      margin-top: 18px;
+    }
   </style>
 </head>
 <body>
-  <h1>Invoice</h1>
-  <div class="muted">{{ invoice_number }}</div>
 
-  <div class="section grid">
+  <div class="header">
     <div>
-      <div class="muted">From</div>
-      <div>{{ from_name }}</div>
-      <div>{{ from_email }}</div>
+      <h1>INVOICE</h1>
+      <div class="invoice-number">INV #{{ invoice_number }}</div>
     </div>
-    <div>
-      <div class="muted">Bill to</div>
-      <div>{{ client_name }}</div>
-      <div>{{ client_email }}</div>
-    </div>
-    <div>
-      <div class="muted">Issued</div>
-      <div>{{ issue_date.strftime('%Y-%m-%d') }}</div>
-      <div class="muted" style="margin-top: 8px;">Due</div>
-      <div>{{ due_date.strftime('%Y-%m-%d') }}</div>
+    <div class="header-right">
+      <div class="date">{{ issue_date.strftime('%B %-d, %Y') }}</div>
+      <div class="due">Due: {% if due_text %}{{ due_text }}{% else %}{{ due_date.strftime('%B %-d, %Y') }}{% endif %}</div>
     </div>
   </div>
 
-  <div class="section">
-    <table>
+  <div class="body">
+
+    <div class="grid">
+      <div class="col-left">
+        <div class="label">From</div>
+        <div class="name">{{ from_name }}</div>
+        {% if from_subtitle %}<div class="meta">{{ from_subtitle }}</div>{% endif %}
+        {% if from_location %}<div class="meta">{{ from_location }}</div>{% endif %}
+        <div class="meta">{{ from_email }}</div>
+      </div>
+      <div class="col-right">
+        <div class="label">Bill to</div>
+        <div class="name">{{ bill_to_company or client_name }}</div>
+        {% if bill_to_attn %}<div class="meta">Attn: {{ bill_to_attn }}</div>{% endif %}
+        {% for line in bill_to_address_lines %}<div class="meta">{{ line }}</div>{% endfor %}
+        {% if not bill_to_address_lines %}<div class="meta">{{ client_email }}</div>{% endif %}
+      </div>
+    </div>
+
+    <table class="items">
       <thead>
-        <tr><th>Description</th><th class="right">Amount</th></tr>
+        <tr>
+          <th>Description</th>
+          <th class="right">Amount</th>
+        </tr>
       </thead>
       <tbody>
         {% for desc, cents in line_items %}
         <tr>
-          <td>{{ desc }}</td>
-          <td class="right">${{ "%.2f"|format(cents / 100) }}</td>
+          <td>
+            <div class="desc-title">{{ desc }}</div>
+            {% if loop.first and description_subtitle %}<div class="desc-subtitle">{{ description_subtitle }}</div>{% endif %}
+            {% if loop.first and description_bullets %}
+            <ul class="bullets">
+              {% for b in description_bullets %}<li>{{ b }}</li>{% endfor %}
+            </ul>
+            {% endif %}
+          </td>
+          <td class="amount">${{ "%.2f"|format(cents / 100) }}</td>
         </tr>
         {% endfor %}
-        <tr class="total-row">
-          <td>Total {{ currency }}</td>
-          <td class="right">${{ "%.2f"|format(total_cents / 100) }}</td>
-        </tr>
       </tbody>
     </table>
-  </div>
 
-  <div class="section notes">
-    <div><strong>Terms:</strong> {{ terms }}</div>
-    {% if notes %}<div style="margin-top: 8px;">{{ notes }}</div>{% endif %}
+    <div class="totals">
+      <div class="totals-row"><div>Subtotal</div><div>${{ "%.2f"|format(total_cents / 100) }}</div></div>
+      <div class="totals-row"><div>Tax</div><div>$0.00</div></div>
+      <div class="totals-row total"><div class="lbl">Total Due</div><div class="val">${{ "%.2f"|format(total_cents / 100) }}</div></div>
+    </div>
+
+    {% if payment_methods %}
+    <div class="section">
+      <div class="label">Payment Methods</div>
+      {% for label, values in payment_methods %}
+      <div class="pay-row">
+        <div class="pay-label">{{ label }}</div>
+        <div class="pay-values">
+          {% for v in values %}<div>{{ v }}</div>{% endfor %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    <div class="section">
+      <div class="label">Terms</div>
+      <div class="terms-text">
+        Payment due {% if due_text %}{{ due_text|lower }}{% else %}by {{ due_date.strftime('%B %-d, %Y') }}{% endif %}.
+        Please reference invoice <strong>{{ invoice_number }}</strong> with payment.
+        {% if notes %}{{ notes }}{% endif %}
+      </div>
+    </div>
+
+    {% if signoff %}<div class="footer">{{ signoff }}</div>{% endif %}
+
   </div>
 </body>
 </html>

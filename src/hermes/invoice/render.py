@@ -29,6 +29,18 @@ class InvoiceContext:
     currency: str = "USD"
     terms: str = "Net 30"
     notes: str = ""
+    # Optional rich-render fields. Empty defaults reproduce the v1 generic
+    # invoice; set per-client to produce a branded layout.
+    from_subtitle: str = ""
+    from_location: str = ""
+    bill_to_company: str = ""           # falls back to client_name in template
+    bill_to_attn: str = ""
+    bill_to_address_lines: tuple[str, ...] = ()
+    description_subtitle: str = ""
+    description_bullets: tuple[str, ...] = ()
+    payment_methods: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    signoff: str = ""
+    due_text: str = ""                  # if set, rendered instead of due_date
 
     @property
     def total_cents(self) -> int:

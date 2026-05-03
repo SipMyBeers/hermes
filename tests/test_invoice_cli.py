@@ -59,28 +59,44 @@ def test_build_invoice_for_client_uses_client_billing(tmp_path):
 
 
 def test_next_invoice_number_unique(tmp_path):
-    n1 = _next_invoice_number(tmp_path, "2026-05")
+    n1 = _next_invoice_number(tmp_path, "INV")
     (tmp_path / f"{n1}.pdf").touch()
-    n2 = _next_invoice_number(tmp_path, "2026-05")
+    n2 = _next_invoice_number(tmp_path, "INV")
     assert n1 != n2
-    assert n1.startswith("INV-2026-05-")
-    assert n2.startswith("INV-2026-05-")
+    assert n1.startswith("INV-")
+    assert n2.startswith("INV-")
 
 
 def test_next_invoice_number_uses_max_not_count(tmp_path):
     """Regression: deleting an invoice must not cause re-numbering collision."""
-    (tmp_path / "INV-2026-05-001.pdf").touch()
-    (tmp_path / "INV-2026-05-002.pdf").touch()
-    (tmp_path / "INV-2026-05-001.pdf").unlink()  # delete first invoice
-    n = _next_invoice_number(tmp_path, "2026-05")
-    assert n == "INV-2026-05-003"  # max(2) + 1
+    (tmp_path / "INV-001.pdf").touch()
+    (tmp_path / "INV-002.pdf").touch()
+    (tmp_path / "INV-001.pdf").unlink()  # delete first invoice
+    n = _next_invoice_number(tmp_path, "INV")
+    assert n == "INV-003"  # max(2) + 1
 
 
 def test_next_invoice_number_skips_non_numeric_tails(tmp_path):
-    (tmp_path / "INV-2026-05-001.pdf").touch()
-    (tmp_path / "INV-2026-05-draft.pdf").touch()  # garbage filename
-    n = _next_invoice_number(tmp_path, "2026-05")
-    assert n == "INV-2026-05-002"  # max(numeric) + 1, ignores 'draft'
+    (tmp_path / "INV-001.pdf").touch()
+    (tmp_path / "INV-draft.pdf").touch()  # garbage filename
+    n = _next_invoice_number(tmp_path, "INV")
+    assert n == "INV-002"  # max(numeric) + 1, ignores 'draft'
+
+
+def test_next_invoice_number_seeds_when_empty(tmp_path):
+    """Fresh install with seed=3 should return prefix-003."""
+    n = _next_invoice_number(tmp_path, "BH", seed=3)
+    assert n == "BH-003"
+
+
+def test_next_invoice_number_recursive_glob(tmp_path):
+    """Cross-month sequence: BH-001 in 2026/03, BH-002 in 2026/04, next is BH-003."""
+    (tmp_path / "2026" / "03").mkdir(parents=True)
+    (tmp_path / "2026" / "04").mkdir(parents=True)
+    (tmp_path / "2026" / "03" / "BH-001.pdf").touch()
+    (tmp_path / "2026" / "04" / "BH-002.pdf").touch()
+    n = _next_invoice_number(tmp_path, "BH", seed=1)
+    assert n == "BH-003"
 
 
 def test_compose_email_includes_invoice_metadata():

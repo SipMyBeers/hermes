@@ -1,10 +1,47 @@
 # Hermes client billing config. Secrets live in ~/.config/hermes/secrets.toml.
-# Add a section per client:
-#
-# [client_key]
-# domain = "example.com"
-# contact_email = "billing@example.com"
-# billing_amount_cents = 50000
-# billing_terms = "Net 30"
-# service_description = "Hosting fees"
-# active = true
+
+[boarhog]
+domain = "boarhogllc.com"
+contact_email = "joseph.bulger@boarhogllc.com"
+billing_amount_cents = 15000
+billing_terms = "Due Upon Receipt"
+service_description = "Monthly Hosting & Maintenance"
+active = true
+
+invoice_prefix = "BH"
+invoice_seed = 3            # next invoice in the sequence (BH-001 + BH-002 already sent)
+
+bill_to_company = "Boarhog LLC"
+bill_to_attn = "Joseph Bulger III"
+bill_to_address_lines = [
+    "2341 Jefferson Street, Suite 104",
+    "San Diego, CA 92110",
+]
+
+description_subtitle = "Recurring monthly service for boarhogllc.com:"
+description_bullets = [
+    "Cloudflare Pages hosting, SSL, and global CDN",
+    "Content updates and text changes as needed",
+    "Image, logo, and asset updates",
+    "DNS and domain configuration management",
+    "Performance monitoring and uptime",
+    "Security patches and maintenance",
+    "Email-ready versions for client presentations",
+]
+
+from_entity = "Beers Labs LLC"
+from_subtitle = "Web Development Services"
+from_location = "Canby, OR"
+from_email_display = "dzbeers747@gmail.com"
+
+due_text = "Upon Receipt"
+
+signoff = "Thank you for your business. — Dylan Beers"
+
+[[boarhog.payment_methods]]
+label = "Check"
+values = [
+    "Payable to Beers Labs LLC",
+    "1655 S Elm St, Unit 330",
+    "Canby, OR 97013",
+]

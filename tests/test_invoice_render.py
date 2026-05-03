@@ -39,7 +39,8 @@ def test_render_html_contains_amount():
     assert "INV-2026-05-001" in html
     assert "Hosting fees" in html
     assert "$500.00" in html  # 50000 cents formatted
-    assert "Net 30" in html
+    # Template renders terms as "Payment due by <due_date>" — check the date is there.
+    assert "June 1, 2026" in html
 
 
 def test_render_html_total_sums_lines(tmp_path):
