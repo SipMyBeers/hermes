@@ -1,19 +1,55 @@
-"""Video URL extraction (Instagram reels, YouTube, TikTok, X).
+"""Video URL extraction — yt-dlp downloads audio, whisper-cli transcribes.
 
-v1.3 implementation:
-- subprocess.run(['yt-dlp', '-x', '--audio-format', 'wav', url])
-- pipe audio through whisper-cpp (see hermes.voice.transcribe)
-- return ExtractedDoc(title=metadata, text=transcript, url=url)
-
-Both yt-dlp and whisper-cpp must be installed on the host (brew install yt-dlp;
-brew install whisper-cpp + download a ggml model into ~/.hermes/whisper/).
+Supports Instagram reels, YouTube (regular + Shorts), TikTok, X status URLs,
+and anything else yt-dlp recognizes. Authentication-required content (private
+IG profiles, members-only YT) will fail at the yt-dlp step and surface as
+RuntimeError; the orchestrator records that to the digestions row's `error`
+column so the bot reply is informative.
 """
 from __future__ import annotations
+import json
+import subprocess
+import tempfile
+from pathlib import Path
+from loguru import logger
 from hermes.ingest.web import ExtractedDoc
+from hermes.voice.transcribe import transcribe_voice
 
 
-def extract_video(url: str) -> ExtractedDoc:
-    raise NotImplementedError(
-        "v1.3: yt-dlp audio extraction + whisper-cpp transcription "
-        "(see module docstring for install steps)"
-    )
+def extract_video(url: str, timeout: int = 900) -> ExtractedDoc:
+    """Download audio via yt-dlp, transcribe via whisper-cli.
+
+    Returns ExtractedDoc(title=video_title, text=transcript, url=url).
+    Raises RuntimeError if yt-dlp can't fetch (auth, geoblock, deletion).
+    """
+    with tempfile.TemporaryDirectory(prefix="hermes-video-") as tmp:
+        tmp_path = Path(tmp)
+        out_tpl = str(tmp_path / "%(id)s.%(ext)s")
+        cmd = [
+            "yt-dlp",
+            "-x", "--audio-format", "wav",   # extract audio as WAV for whisper.cpp
+            "--no-playlist",
+            "--no-warnings",
+            "--print-json",                  # one-line JSON metadata at end
+            "-o", out_tpl,
+            url,
+        ]
+        logger.debug("yt-dlp: {}", " ".join(cmd))
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"yt-dlp failed (rc={result.returncode}): {result.stderr.strip()[:500]}"
+            )
+        # Parse the last valid JSON line for metadata (yt-dlp prints multiple lines).
+        info: dict = {}
+        for line in result.stdout.strip().splitlines():
+            try:
+                info = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+        title = str(info.get("title") or info.get("fulltitle") or "")
+        wavs = list(tmp_path.glob("*.wav"))
+        if not wavs:
+            raise RuntimeError(f"yt-dlp produced no .wav file in {tmp_path}")
+        transcript = transcribe_voice(wavs[0])
+        return ExtractedDoc(title=title, text=transcript, url=url)
