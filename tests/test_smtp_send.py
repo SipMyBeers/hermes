@@ -30,6 +30,35 @@ def test_build_message_sets_headers():
     assert msg.get_content().strip() == "Hello"
 
 
+def test_build_message_sets_message_id():
+    msg = build_message(
+        gmail=_gmail(),
+        to_addr="c@e.com",
+        subject="s",
+        body_text="b",
+        attachments=[],
+    )
+    mid = msg["Message-ID"]
+    assert mid is not None
+    assert mid.startswith("<") and mid.endswith(">")
+    assert "@ranger-beers.com" in mid
+
+
+def test_build_message_html_alternative():
+    msg = build_message(
+        gmail=_gmail(),
+        to_addr="c@e.com",
+        subject="s",
+        body_text="plain",
+        attachments=[],
+        body_html="<p>html</p>",
+    )
+    assert msg.is_multipart()
+    types = {p.get_content_type() for p in msg.walk()}
+    assert "text/plain" in types
+    assert "text/html" in types
+
+
 def test_build_message_attaches_pdf(tmp_path):
     pdf = tmp_path / "invoice.pdf"
     pdf.write_bytes(b"%PDF-1.4 fake")
@@ -52,7 +81,8 @@ def test_smtp_sender_send_calls_smtp(tmp_path):
     msg = build_message(_gmail(), "c@e.com", "s", "b", [])
     with patch("hermes.mail.smtp_client.smtplib.SMTP") as smtp_cls:
         smtp_cls.return_value.__enter__.return_value = fake_smtp
-        sender.send(msg)
+        result = sender.send(msg)
     fake_smtp.starttls.assert_called_once()
     fake_smtp.login.assert_called_once_with("u@gmail.com", "p")
     fake_smtp.send_message.assert_called_once_with(msg)
+    assert result.startswith("<") and "@ranger-beers.com" in result

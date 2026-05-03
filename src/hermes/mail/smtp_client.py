@@ -1,5 +1,6 @@
 from __future__ import annotations
 from email.message import EmailMessage
+from email.utils import make_msgid
 from pathlib import Path
 import mimetypes
 import smtplib
@@ -23,6 +24,7 @@ def build_message(
     msg["Reply-To"] = gmail.reply_to
     msg["To"] = to_addr
     msg["Subject"] = subject
+    msg["Message-ID"] = make_msgid(domain="ranger-beers.com")
     msg.set_content(body_text)
     if body_html:
         msg.add_alternative(body_html, subtype="html")
@@ -45,12 +47,15 @@ class SmtpSender:
         self.gmail = gmail
 
     def send(self, message: EmailMessage) -> str:
-        """Send and return Message-ID. Raises smtplib exceptions on failure."""
+        """Send and return the Message-ID set by build_message().
+
+        Raises smtplib exceptions on connect/auth/send failure.
+        """
         with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as smtp:
             smtp.ehlo()
             smtp.starttls()
             smtp.ehlo()
             smtp.login(self.gmail.smtp_user, self.gmail.smtp_app_password)
             smtp.send_message(message)
-        logger.info("smtp.send to={} subject={!r}", message["To"], message["Subject"])
+            logger.info("smtp.send to={} subject={!r}", message["To"], message["Subject"])
         return str(message.get("Message-ID") or "")
