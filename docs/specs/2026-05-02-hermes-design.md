@@ -84,7 +84,8 @@ Three small units, one shared SQLite, one shared `~/.config/hermes/secrets.toml`
 **Outbound flow:**
 
 - All sends go through one `send(message)` function.
-- SMTP `smtp.gmail.com:587` STARTTLS, app password, `From: Dylan Beers <dylan@ranger-beers.com>`.
+- SMTP `smtp.gmail.com:587` STARTTLS, app password.
+- `From: Dylan Beers <dzbeers747@gmail.com>`, `Reply-To: Dylan Beers <dylan@ranger-beers.com>`. See "Email delivery path" below for why we don't put `dylan@ranger-beers.com` in `From` directly in v1.
 - Failures land in `outbox` table with `last_error`; daemon retries with backoff; user can `/retry <id>` from Telegram.
 
 **Why two tiers, not LLM-everywhere:** rule-based is faster, more accurate (fewer false-positives) and free of CPU cost on the 90% of mail that's obviously a promo. LLM is reserved for the cases it adds value (drafting, ambiguous senders).
@@ -100,7 +101,7 @@ Three small units, one shared SQLite, one shared `~/.config/hermes/secrets.toml`
 
 | Command | Effect |
 |---------|--------|
-| `/digest` | On-demand category summary; auto-posted at 08:00 ghengis-local time daily. |
+| `/digest` | On-demand category summary; auto-posted at 08:00 ghengis-local daily (the morning email report — see "Daily morning report" below). |
 | `/approve <id>` | Send queued draft or invoice. |
 | `/reject <id>` | Discard queued draft. |
 | `/edit <id> <text>` | Replace draft body, leave queued. |
@@ -210,7 +211,8 @@ imap_user = "dzbeers747@gmail.com"
 imap_app_password = "..."         # 16-char app password
 smtp_user = "dzbeers747@gmail.com"
 smtp_app_password = "..."         # same value, separate field for clarity
-from_address = "Dylan Beers <dylan@ranger-beers.com>"
+from_address = "Dylan Beers <dzbeers747@gmail.com>"
+reply_to = "Dylan Beers <dylan@ranger-beers.com>"
 
 [telegram]
 bot_token = "8210698895:..."
@@ -264,15 +266,59 @@ active = true
 | `~/Library/LaunchAgents/com.beers.hermes-invoice.plist` | Monthly cron. |
 | `uv` venv at `~/Projects/hermes/.venv` | Python 3.12+ isolated. |
 
+## Email delivery path
+
+DNS audit on 2026-05-02 found:
+
+- MX → `route1/2/3.mx.cloudflare.net` (Cloudflare Email Routing already active for inbound).
+- SPF → `v=spf1 include:_spf.mx.cloudflare.net ~all` (authorizes Cloudflare only — **does not authorize Google SMTP**).
+- DMARC → `p=quarantine; aspf=r; adkim=r` (relaxed alignment, but still enforces).
+- DKIM → no key published for `google._domainkey`, `selector1._domainkey`, or `cf2024-1._domainkey`.
+
+**Implication for free Gmail:** sending `From: dylan@ranger-beers.com` via `smtp.gmail.com` would fail SPF (Google not authorized) and fail DKIM alignment (free Gmail signs `d=gmail.com`, not `d=ranger-beers.com` — proper domain DKIM requires Workspace). DMARC then quarantines. Client invoices land in spam.
+
+**v1 strategy — Reply-To header:** outbound mail uses `From: dzbeers747@gmail.com`, `Reply-To: dylan@ranger-beers.com`. Recipients see your personal Gmail address but replies route to the brand address. SPF passes (Google sends from a Google address), DKIM aligns (`d=gmail.com` matches `From: ...@gmail.com`), DMARC passes. Ships today, deliverable, no DNS work.
+
+**v1.1 migration — Zoho Mail Free:** Zoho Free gives a real `dylan@ranger-beers.com` mailbox with proper SPF/DKIM/DMARC under the domain. Migration is a config swap in `secrets.toml` (host, port, creds) plus DNS edits to point MX at Zoho (or split-route via Cloudflare). One day's work, planned for the week after launch. Hermes' `send()` function is provider-agnostic — only the SMTP creds change.
+
 ## One-time external setup
 
 These are user actions outside the codebase, listed in install order:
 
 1. **Gmail 2FA + app password.** Generate at <https://myaccount.google.com/apppasswords>.
-2. **Cloudflare Email Routing for `ranger-beers.com`** (or whoever hosts DNS): forward `dylan@ranger-beers.com` → `dzbeers747@gmail.com`. Free, ~3 min. Required so Gmail's "Send mail as" verification email reaches you.
-3. **SPF record on `ranger-beers.com`.** Add `TXT @ "v=spf1 include:_spf.google.com ~all"` so Gmail-relayed mail from `dylan@ranger-beers.com` doesn't land in client spam folders.
-4. **Gmail "Send mail as".** Settings → Accounts → "Send mail as" → add `Dylan Beers <dylan@ranger-beers.com>`, treat as alias, click verification link in the forwarded confirmation email.
-5. **SSH access.** Pubkey already added; verified `macmini@ghengis` works.
+2. **Cloudflare Email Routing rule.** Forward `dylan@ranger-beers.com` → `dzbeers747@gmail.com`. MX is already pointed at Cloudflare; just add the routing rule. Free, ~2 min. Required so client replies reach the inbox Hermes watches.
+3. **SSH access.** Pubkey already added; verified `macmini@ghengis` works.
+
+(No SPF / DKIM / "Send mail as" / Zoho work needed for v1 — that's all v1.1.)
+
+## Daily morning report
+
+Auto-posted to Telegram at **08:00 ghengis-local** by a fourth `launchd` plist (`com.beers.hermes-digest.plist`). Same payload as `/digest` on demand.
+
+**Contents (in order):**
+
+1. **Headline counts since 8am yesterday** — `Promo: 47 (archived)`, `Client: 3`, `Personal: 2`, `Transactional: 8`, `ToReview: 1`.
+2. **Client mail headlines** — sender, subject, one-line gemma4 summary. Tap-through to `/draft <id>` to surface Hermes' suggested reply.
+3. **ToReview headlines** — anything tier-2 flagged below threshold. Tap-through to `/reclassify <id> <label>`.
+4. **Outbound status** — `Drafts pending approval: N`, `Failed sends: N` with `/retry` shortcut, `Invoices sent yesterday: N`.
+5. **Ledger snapshot** — current month: `out: $X billed / $Y paid`, `in: $Z spent`. Overdue invoices flagged red.
+6. **Health line** — IMAP last-poll, Ollama latency, daemon uptime.
+
+The 08:00 cron is independent of the always-on daemons — even if `hermes-mail` is asleep, the digest job reads SQLite directly and posts. If the daemon is down, the digest header includes a `⚠ DAEMON DOWN <duration>` warning.
+
+A second optional cron at **18:00** posts an end-of-day variant focused on `Drafts pending approval` only — toggle via `~/.config/hermes/secrets.toml` `[digest] evening_report = true`. Off by default.
+
+## Cron jobs (launchd plists)
+
+| Plist | Schedule | Job |
+|-------|----------|-----|
+| `com.beers.hermes-mail.plist` | always-on (`KeepAlive=true`) | IMAP IDLE daemon |
+| `com.beers.hermes-tg.plist` | always-on (`KeepAlive=true`) | Telegram bot polling |
+| `com.beers.hermes-digest.plist` | `StartCalendarInterval Hour=8 Minute=0` | Morning report |
+| `com.beers.hermes-digest-evening.plist` | `Hour=18 Minute=0` (disabled by default) | Evening drafts-pending report |
+| `com.beers.hermes-invoice.plist` | `Day=1 Hour=9 Minute=0` | Monthly invoice generation |
+
+All plists set `RunAtLoad=false` for the cron-style ones, `RunAtLoad=true` for the daemons. Logs to `~/.hermes/logs/<job>.log`, rotated weekly via `newsyslog.conf` entry written at install time.
 
 ## Open questions / deferred
 
@@ -280,6 +326,8 @@ These are user actions outside the codebase, listed in install order:
 - **Inbound invoice tracking (scope item 8):** deferred to v2. Receipts/invoices land in `Transactional` label and `ledger` direction `'in'` automatically, but no spreadsheet export yet.
 - **Multi-recipient invoices (CC/BCC accounting):** deferred. Single recipient per client for now.
 - **Per-client invoice templates:** v1 ships one shared `standard.html`. Adding overrides is a one-file change in v2.
+- **Zoho Mail Free migration (v1.1):** swap SMTP creds in `secrets.toml`, add MX/SPF/DKIM/DMARC for Zoho on `ranger-beers.com`, remove the `Reply-To` header workaround so `From:` is the brand address. Planned the week after v1 ships.
+- **Inbound DKIM verification on incoming client mail:** v1 trusts Gmail's spam decisions. v2 could surface DKIM/SPF/DMARC pass/fail in the digest as a phishing signal.
 
 ## Acceptance criteria for v1
 
