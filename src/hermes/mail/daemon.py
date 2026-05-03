@@ -117,7 +117,10 @@ def process_message(
     try:
         imap.apply_label(uid, label)
         if classification.label == "promo":
-            imap.archive(uid)
+            if cfg.mail.delete_promos:
+                imap.move_to_trash(uid)
+            else:
+                imap.archive(uid)
     except Exception as e:
         logger.error("imap label failed uid={} err={}", uid, e)
 

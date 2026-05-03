@@ -1,7 +1,8 @@
+from dataclasses import replace
 from email import message_from_bytes
 from pathlib import Path
 from unittest.mock import MagicMock
-from hermes.config import Config, GmailConfig, TelegramConfig, ClientConfig
+from hermes.config import Config, GmailConfig, TelegramConfig, ClientConfig, MailConfig
 from hermes.classifier.rules import RuleResult, ClientHint
 from hermes.classifier.llm import LLMResult
 from hermes.mail.daemon import process_message, classify_message, LLM_THRESHOLD
@@ -10,6 +11,8 @@ FIXTURES = Path(__file__).parent / "fixtures" / "mbox"
 
 
 def _cfg() -> Config:
+    # Default to archive-only so existing archive-path tests keep their behaviour;
+    # tests exercising the trash path explicitly flip delete_promos=True.
     return Config(
         gmail=GmailConfig(
             imap_user="u@g.com", imap_app_password="p",
@@ -26,6 +29,7 @@ def _cfg() -> Config:
                 service_description="Hosting fees", active=True,
             )
         },
+        mail=MailConfig(delete_promos=False),
     )
 
 
@@ -73,6 +77,34 @@ def test_process_message_archives_promo(tmp_path):
     process_message(uid=11, msg=msg, db=db, cfg=_cfg(), imap=fake_imap, llm_classifier=None, drafter=None)
     fake_imap.apply_label.assert_called_once_with(11, "Hermes/Promo")
     fake_imap.archive.assert_called_once_with(11)
+
+
+def test_process_message_trashes_promo_when_delete_promos_true(tmp_path):
+    """delete_promos=True routes classified promos to Gmail Trash, not archive."""
+    from hermes.db import connect, migrate
+    db = connect(tmp_path / "t.sqlite")
+    migrate(db)
+    msg = message_from_bytes((FIXTURES / "promo_amazon.eml").read_bytes())
+    fake_imap = MagicMock()
+    cfg = replace(_cfg(), mail=MailConfig(delete_promos=True))
+    process_message(uid=21, msg=msg, db=db, cfg=cfg, imap=fake_imap, llm_classifier=None, drafter=None)
+    fake_imap.apply_label.assert_called_once_with(21, "Hermes/Promo")
+    fake_imap.move_to_trash.assert_called_once_with(21)
+    fake_imap.archive.assert_not_called()
+
+
+def test_process_message_archives_promo_when_delete_promos_false(tmp_path):
+    """delete_promos=False keeps the legacy archive-only behaviour."""
+    from hermes.db import connect, migrate
+    db = connect(tmp_path / "t.sqlite")
+    migrate(db)
+    msg = message_from_bytes((FIXTURES / "promo_amazon.eml").read_bytes())
+    fake_imap = MagicMock()
+    cfg = replace(_cfg(), mail=MailConfig(delete_promos=False))
+    process_message(uid=22, msg=msg, db=db, cfg=cfg, imap=fake_imap, llm_classifier=None, drafter=None)
+    fake_imap.apply_label.assert_called_once_with(22, "Hermes/Promo")
+    fake_imap.archive.assert_called_once_with(22)
+    fake_imap.move_to_trash.assert_not_called()
 
 
 def test_process_message_does_not_archive_client(tmp_path):
