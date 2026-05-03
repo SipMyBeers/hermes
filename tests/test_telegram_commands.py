@@ -93,3 +93,33 @@ def test_parse_attachments_handles_shapes():
     assert _parse_attachments("/tmp/x.pdf") == [Path("/tmp/x.pdf")]
     assert _parse_attachments('["/tmp/a.pdf","/tmp/b.pdf"]') == [Path("/tmp/a.pdf"), Path("/tmp/b.pdf")]
     assert _parse_attachments("[malformed") == [Path("[malformed")]  # falls back to single-path
+
+
+def test_save_command_inserts_bookmark(tmp_path):
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    tg = MagicMock()
+    update = {"update_id": 10, "message": {"chat": {"id": 42},
+              "text": "/save https://example.com/article reading later"}}
+    handle_update(update, _cfg(), db, tg)
+    rows = list(db.execute("SELECT url, notes FROM bookmarks"))
+    assert rows == [("https://example.com/article", "reading later")]
+    tg.send_message.assert_called_once()
+    assert "Saved bookmark" in tg.send_message.call_args.args[0]
+
+
+def test_save_rejects_non_url(tmp_path):
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    tg = MagicMock()
+    update = {"update_id": 11, "message": {"chat": {"id": 42}, "text": "/save justtext"}}
+    handle_update(update, _cfg(), db, tg)
+    rows = list(db.execute("SELECT COUNT(*) FROM bookmarks"))
+    assert rows[0][0] == 0
+    assert "doesn't look like a URL" in tg.send_message.call_args.args[0]
+
+
+def test_save_with_no_args_shows_usage(tmp_path):
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    tg = MagicMock()
+    update = {"update_id": 12, "message": {"chat": {"id": 42}, "text": "/save"}}
+    handle_update(update, _cfg(), db, tg)
+    assert "Usage:" in tg.send_message.call_args.args[0]

@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import sqlite3
 from loguru import logger
+from hermes.bookmarks.store import save_bookmark
 from hermes.config import Config
 from hermes.mail.smtp_client import SmtpSender, build_message
 from hermes.telegram.client import TelegramClient
@@ -15,6 +16,7 @@ HELP_TEXT = """*Hermes Commands*
 /approve <id> — Send the queued draft or invoice.
 /reject <id> — Discard a queued item.
 /retry <id> — Retry a failed send.
+/save <url> [notes...] — Save a bookmark for the weekly digest.
 /invoice <client> [YYYY-MM] — Render an invoice for a client.
 /client list — List configured clients.
 /reclassify <uid> <label> — Correct a message classification.
@@ -84,6 +86,7 @@ def handle_update(
         "/digest": _cmd_digest,
         "/approve": _cmd_approve,
         "/reject": _cmd_reject,
+        "/save": _cmd_save,
         "/help": lambda *a: tg.send_message(HELP_TEXT),
         "/start": lambda *a: tg.send_message(HELP_TEXT),
     }
@@ -157,3 +160,19 @@ def _cmd_reject(args, cfg, db, tg):
         return
     res = db.execute("DELETE FROM outbox WHERE id=? AND status='queued'", (oid,))
     tg.send_message(f"Rejected #{oid}" if res.rowcount else f"Nothing to reject for id={oid}")
+
+
+def _cmd_save(args, cfg, db, tg):
+    if not args:
+        tg.send_message("Usage: /save <url> [notes...]")
+        return
+    url = args[0]
+    if not url.startswith(("http://", "https://")):
+        tg.send_message(f"That doesn't look like a URL: {url}")
+        return
+    notes = " ".join(args[1:]) if len(args) > 1 else None
+    bid = save_bookmark(db, url=url, notes=notes)
+    msg = f"Saved bookmark #{bid} — {url}"
+    if notes:
+        msg += f"\n{notes}"
+    tg.send_message(msg)
