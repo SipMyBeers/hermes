@@ -11,7 +11,7 @@
   <key>RunAtLoad</key>         <false/>
   <key>StartCalendarInterval</key>
   <dict>
-    <key>Hour</key>   <integer>8</integer>
+    <key>Hour</key>   <integer>9</integer>
     <key>Minute</key> <integer>0</integer>
   </dict>
   <key>StandardOutPath</key>   <string>/Users/macmini/.hermes/logs/digest.log</string>
