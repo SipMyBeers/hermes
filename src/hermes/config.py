@@ -54,11 +54,17 @@ class ClientConfig:
 
 
 @dataclass(frozen=True)
+class MailConfig:
+    delete_promos: bool = True   # default: send classified promos to Trash (auto-purge in 30d)
+
+
+@dataclass(frozen=True)
 class Config:
     gmail: GmailConfig
     telegram: TelegramConfig
     digest_evening_report: bool
     clients: Mapping[str, ClientConfig] = field(default_factory=lambda: MappingProxyType({}))
+    mail: MailConfig = field(default_factory=MailConfig)
 
 
 def _require_bool(value, *, key: str, source: str) -> bool:
@@ -129,6 +135,22 @@ def load_config(
     except (TypeError, AttributeError) as e:
         raise ConfigError(f"{secrets_path}: malformed [digest] section - {e}") from e
 
+    try:
+        mail_section = s.get("mail", {})
+        if "delete_promos" in mail_section:
+            delete_promos = _require_bool(
+                mail_section["delete_promos"],
+                key="delete_promos",
+                source=f"{secrets_path}:[mail]",
+            )
+        else:
+            delete_promos = True
+        mail_cfg = MailConfig(delete_promos=delete_promos)
+    except ConfigError:
+        raise
+    except (TypeError, AttributeError) as e:
+        raise ConfigError(f"{secrets_path}: malformed [mail] section - {e}") from e
+
     clients: dict[str, ClientConfig] = {}
     for key, body in c.items():
         try:
@@ -180,4 +202,5 @@ def load_config(
         telegram=telegram,
         digest_evening_report=digest_evening,
         clients=MappingProxyType(clients),
+        mail=mail_cfg,
     )

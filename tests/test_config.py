@@ -1,6 +1,6 @@
 from pathlib import Path
 import pytest
-from hermes.config import load_config, Config, GmailConfig, TelegramConfig, ClientConfig
+from hermes.config import load_config, Config, GmailConfig, TelegramConfig, ClientConfig, MailConfig
 
 
 def test_load_config_full(tmp_path: Path):
@@ -145,6 +145,80 @@ active = true
     cfg = load_config(secrets_path=secrets, clients_path=clients)
     with pytest.raises(TypeError):
         cfg.clients["injected"] = None  # type: ignore[index]
+
+
+def test_load_config_mail_delete_promos_default_true(tmp_path: Path):
+    """Omitting [mail] entirely yields delete_promos=True (matches the user's explicit ask)."""
+    secrets = tmp_path / "secrets.toml"
+    secrets.write_text("""
+[gmail]
+imap_user = "u@g.com"
+imap_app_password = "x"
+smtp_user = "u@g.com"
+smtp_app_password = "x"
+from_address = "U <u@g.com>"
+reply_to = "U <u@g.com>"
+
+[telegram]
+bot_token = "1:A"
+chat_id = 0
+""")
+    clients = tmp_path / "clients.toml"
+    clients.write_text("# empty")
+    cfg = load_config(secrets_path=secrets, clients_path=clients)
+    assert isinstance(cfg.mail, MailConfig)
+    assert cfg.mail.delete_promos is True
+
+
+def test_load_config_mail_delete_promos_explicit_false(tmp_path: Path):
+    """Explicit [mail] delete_promos=false flips to archive-only behaviour."""
+    secrets = tmp_path / "secrets.toml"
+    secrets.write_text("""
+[gmail]
+imap_user = "u@g.com"
+imap_app_password = "x"
+smtp_user = "u@g.com"
+smtp_app_password = "x"
+from_address = "U <u@g.com>"
+reply_to = "U <u@g.com>"
+
+[telegram]
+bot_token = "1:A"
+chat_id = 0
+
+[mail]
+delete_promos = false
+""")
+    clients = tmp_path / "clients.toml"
+    clients.write_text("# empty")
+    cfg = load_config(secrets_path=secrets, clients_path=clients)
+    assert cfg.mail.delete_promos is False
+
+
+def test_load_config_mail_delete_promos_must_be_bool(tmp_path: Path):
+    """Strings like \"false\" are rejected — fail loud rather than silent truthiness."""
+    secrets = tmp_path / "secrets.toml"
+    secrets.write_text("""
+[gmail]
+imap_user = "u@g.com"
+imap_app_password = "x"
+smtp_user = "u@g.com"
+smtp_app_password = "x"
+from_address = "U <u@g.com>"
+reply_to = "U <u@g.com>"
+
+[telegram]
+bot_token = "1:A"
+chat_id = 0
+
+[mail]
+delete_promos = "false"
+""")
+    clients = tmp_path / "clients.toml"
+    clients.write_text("# empty")
+    from hermes.config import ConfigError
+    with pytest.raises(ConfigError, match="delete_promos"):
+        load_config(secrets_path=secrets, clients_path=clients)
 
 
 def test_two_clients_loaded(tmp_path: Path):
