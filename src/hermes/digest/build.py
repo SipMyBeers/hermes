@@ -2,9 +2,21 @@ from __future__ import annotations
 import email
 import sqlite3
 from datetime import datetime, timezone
+from email.header import decode_header, make_header
 from typing import Callable
 from hermes.config import Config
 from hermes.digest.enrich import EmailBrief
+
+
+def _decode(value: object) -> str:
+    """Decode RFC 2047 encoded-word headers — defensive cover for any rows
+    written before the daemon learned to decode at write-time."""
+    if value is None:
+        return ""
+    try:
+        return str(make_header(decode_header(str(value))))
+    except Exception:
+        return str(value)
 
 # Cap how many emails we enrich in one digest. Each gemma4 call is ~3-8s,
 # so 15 puts the worst-case digest job at a couple minutes — fine for cron.
@@ -18,16 +30,25 @@ _INTERESTING_CLASSES = ("client", "review", "personal", "other")
 def _interesting_messages(
     db: sqlite3.Connection, since_hours: int = 24
 ) -> list[tuple[int, str, str, bytes | None]]:
-    """Recent (uid, sender, subject, raw_email) for messages worth a per-email block."""
+    """Recent (uid, sender, subject, raw_email) for messages worth a per-email block.
+
+    Excludes the bootstrap sentinel row (sender '<bootstrap>', message_id
+    'hermes-bootstrap-*') which the mail daemon writes on first run to anchor
+    the IMAP UID range without fetching the historic backlog."""
     placeholders = ",".join("?" for _ in _INTERESTING_CLASSES)
     rows = db.execute(
         f"SELECT uid, sender, subject, raw_email FROM messages "
         f"WHERE classification IN ({placeholders}) "
         f"  AND received_at > datetime('now', ?) "
+        f"  AND sender != '<bootstrap>' "
+        f"  AND message_id NOT LIKE 'hermes-bootstrap-%' "
         f"ORDER BY received_at DESC",
         (*_INTERESTING_CLASSES, f"-{since_hours} hour"),
     ).fetchall()
-    return [(int(uid), str(s or ""), str(sub or ""), raw) for uid, s, sub, raw in rows]
+    return [
+        (int(uid), _decode(s), _decode(sub), raw)
+        for uid, s, sub, raw in rows
+    ]
 
 
 def _default_enricher() -> Callable[[bytes | None], EmailBrief | None]:

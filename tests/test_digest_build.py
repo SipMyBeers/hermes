@@ -152,3 +152,37 @@ def test_digest_handles_missing_raw_email(tmp_path):
     text = build_morning_digest(db, _cfg(), enrich_one=trap)
     assert sentinel_called_with == [None]
     assert "Pre-migration mail" in text
+
+
+def test_digest_excludes_bootstrap_sentinel_row(tmp_path):
+    """The first-run anchor row (sender '<bootstrap>') must not surface
+    in the per-email block."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    now = datetime.now(timezone.utc).isoformat()
+    db.execute(
+        "INSERT INTO messages(uid, message_id, received_at, sender, subject, "
+        "classification, classifier, confidence) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (44385, "hermes-bootstrap-44385", now, "<bootstrap>",
+         "<initial anchor>", "other", "user", 1.0),
+    )
+    text = build_morning_digest(db, _cfg(), enrich_one=_NO_ENRICH)
+    assert "<bootstrap>" not in text
+    assert "<initial anchor>" not in text
+
+
+def test_digest_decodes_encoded_word_subjects(tmp_path):
+    """RFC 2047 =?UTF-8?B?...?= subjects must be rendered as plain text."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    now = datetime.now(timezone.utc).isoformat()
+    encoded = "=?UTF-8?B?SGVsbG8gV29ybGQ=?="  # decodes to 'Hello World'
+    db.execute(
+        "INSERT INTO messages(uid, message_id, received_at, sender, subject, "
+        "classification, classifier, confidence) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (1001, "m-1001", now, "Casey <casey@x.com>", encoded,
+         "review", "llm", 0.6),
+    )
+    text = build_morning_digest(db, _cfg(), enrich_one=_NO_ENRICH)
+    assert "Hello World" in text
+    assert "=?UTF-8?B?" not in text

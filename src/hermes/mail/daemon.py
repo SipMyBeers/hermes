@@ -2,6 +2,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from email.header import decode_header, make_header
 from email.message import Message
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -91,6 +92,17 @@ def _telegram(cfg: Config) -> TelegramClient:
     return TelegramClient(cfg.telegram.bot_token, cfg.telegram.chat_id)
 
 
+def _decode_header(value: object) -> str:
+    """Decode RFC 2047 encoded-word headers (e.g. =?UTF-8?B?...?=) to readable
+    text. Handles None, str, and email.header.Header objects."""
+    if value is None:
+        return ""
+    try:
+        return str(make_header(decode_header(str(value))))
+    except Exception:
+        return str(value)
+
+
 def process_message(
     uid: int,
     msg: Message,
@@ -115,8 +127,8 @@ def process_message(
             received = datetime.now(timezone.utc).isoformat()
     else:
         received = datetime.now(timezone.utc).isoformat()
-    sender = str(msg.get("From", ""))
-    subject = str(msg.get("Subject", ""))
+    sender = _decode_header(msg.get("From"))
+    subject = _decode_header(msg.get("Subject"))
 
     draft = ""
     if classification.label == "client" and drafter is not None:
