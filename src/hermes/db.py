@@ -2,7 +2,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # Note: databases migrated from a v0/initial install may still have the old
 # `idx_messages_received` single-column index hanging around alongside the
@@ -126,6 +126,28 @@ CREATE INDEX IF NOT EXISTS idx_feed_items_seen ON feed_items(seen_at);
 CREATE INDEX IF NOT EXISTS idx_renewals_expires ON renewals(expires_at);
 """
 
+# Phase G: URL ingestion. The user sends a URL to the Telegram bot; Hermes
+# fetches, extracts, summarizes, and stores it here. Web URLs are real today;
+# video URLs (Instagram reels, YouTube, TikTok, X) are stubbed until v1.3
+# brings yt-dlp + whisper-cpp transcription. Additive only.
+_SCHEMA_V4 = """
+CREATE TABLE IF NOT EXISTS digestions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  url TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('web','video','unknown')),
+  title TEXT,
+  content_text TEXT,
+  summary TEXT,
+  actions TEXT,                  -- JSON array
+  tools TEXT,                    -- JSON array of {name, description}
+  source_chat_id INTEGER,
+  ingested_at TEXT NOT NULL,
+  error TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_digestions_ingested ON digestions(ingested_at);
+"""
+
 
 def connect(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -156,4 +178,8 @@ def migrate(conn: sqlite3.Connection) -> None:
         # v2 -> v3: provision Phase F skeleton tables (subs, renewals, leads,
         # bookmarks, feeds, feed_items). All IF NOT EXISTS / additive.
         conn.executescript(_SCHEMA_V3)
+    if current < 4:
+        # v3 -> v4: provision Phase G URL ingestion table (digestions).
+        # Additive — no v1/v2/v3 tables touched.
+        conn.executescript(_SCHEMA_V4)
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")

@@ -158,7 +158,33 @@ def test_migrate_v2_to_v3_adds_skeleton_tables(tmp_path: Path):
     migrate(conn)
     tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"subscriptions", "renewals", "leads", "bookmarks", "feeds", "feed_items"}.issubset(tables)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+    # migrate() always lands at SCHEMA_VERSION (v4 once Phase G shipped); the
+    # v3 step ran along the way which is what this test guards.
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+    conn.close()
+
+
+def test_migrate_v3_to_v4_adds_digestions_table(tmp_path: Path):
+    """v3 -> v4 provisions the Phase G digestions table additively."""
+    db_path = tmp_path / "t.sqlite"
+    conn = connect(db_path)
+    # Start at v3 by running migrate then forcing user_version back.
+    migrate(conn)
+    conn.execute("PRAGMA user_version = 3")
+    conn.execute("DROP TABLE IF EXISTS digestions")
+    # Now upgrade to v4.
+    migrate(conn)
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "digestions" in tables
+    # CHECK constraint sanity: only allowed kinds.
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(digestions)").fetchall()]
+    assert {"id", "url", "kind", "title", "content_text", "summary",
+            "actions", "tools", "source_chat_id", "ingested_at", "error"}.issubset(set(cols))
+    indexes = {row[0] for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='digestions'"
+    )}
+    assert "idx_digestions_ingested" in indexes
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
     conn.close()
 
 
