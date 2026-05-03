@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Invoice {{ invoice_number }}</title>
+  <style>
+    body { font-family: -apple-system, "Helvetica Neue", Arial, sans-serif; color: #222; padding: 48px; }
+    h1 { font-size: 28px; margin: 0 0 4px 0; }
+    .muted { color: #777; font-size: 12px; }
+    .section { margin: 24px 0; }
+    .grid { display: flex; justify-content: space-between; }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+    th, td { text-align: left; padding: 8px 0; border-bottom: 1px solid #eee; }
+    th { font-size: 11px; text-transform: uppercase; color: #999; letter-spacing: 1px; }
+    .total-row td { border-top: 2px solid #222; border-bottom: none; font-weight: bold; padding-top: 12px; }
+    .right { text-align: right; }
+    .notes { font-size: 12px; color: #555; }
+  </style>
+</head>
+<body>
+  <h1>Invoice</h1>
+  <div class="muted">{{ invoice_number }}</div>
+
+  <div class="section grid">
+    <div>
+      <div class="muted">From</div>
+      <div>{{ from_name }}</div>
+      <div>{{ from_email }}</div>
+    </div>
+    <div>
+      <div class="muted">Bill to</div>
+      <div>{{ client_name }}</div>
+      <div>{{ client_email }}</div>
+    </div>
+    <div>
+      <div class="muted">Issued</div>
+      <div>{{ issue_date.strftime('%Y-%m-%d') }}</div>
+      <div class="muted" style="margin-top: 8px;">Due</div>
+      <div>{{ due_date.strftime('%Y-%m-%d') }}</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <table>
+      <thead>
+        <tr><th>Description</th><th class="right">Amount</th></tr>
+      </thead>
+      <tbody>
+        {% for desc, cents in line_items %}
+        <tr>
+          <td>{{ desc }}</td>
+          <td class="right">${{ "%.2f"|format(cents / 100) }}</td>
+        </tr>
+        {% endfor %}
+        <tr class="total-row">
+          <td>Total {{ currency }}</td>
+          <td class="right">${{ "%.2f"|format(total_cents / 100) }}</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="section notes">
+    <div><strong>Terms:</strong> {{ terms }}</div>
+    {% if notes %}<div style="margin-top: 8px;">{{ notes }}</div>{% endif %}
+  </div>
+</body>
+</html>
