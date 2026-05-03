@@ -16,8 +16,15 @@ _MONTH_NAMES = [
 
 def _next_invoice_number(out_dir: Path, month: str) -> str:
     out_dir.mkdir(parents=True, exist_ok=True)
-    existing = list(out_dir.glob(f"INV-{month}-*.pdf"))
-    n = len(existing) + 1
+    nums = []
+    for p in out_dir.glob(f"INV-{month}-*.pdf"):
+        # filename like "INV-2026-05-007.pdf" -> tail "007"
+        tail = p.stem.rsplit("-", 1)[-1]
+        try:
+            nums.append(int(tail))
+        except ValueError:
+            continue
+    n = (max(nums) + 1) if nums else 1
     return f"INV-{month}-{n:03d}"
 
 
@@ -27,14 +34,25 @@ def build_invoice_for_client(
     if client_key not in cfg.clients:
         raise KeyError(f"client {client_key!r} not in clients.toml")
     client = cfg.clients[client_key]
+    if not client.active:
+        raise ValueError(f"client {client_key} is inactive in clients.toml")
     if not client.billing_amount_cents:
         raise ValueError(f"client {client_key} has no billing_amount_cents")
     year, mo = map(int, month.split("-"))
     issue = date(year, mo, 1)
     last_day = calendar.monthrange(year, mo)[1]
-    due = (date(year, mo, last_day)
-           if client.billing_terms.lower().startswith("due on receipt")
-           else date(year, mo, last_day) + timedelta(days=30))
+    end_of_month = date(year, mo, last_day)
+    terms_lower = client.billing_terms.lower()
+    if terms_lower.startswith("due on receipt"):
+        due = issue
+    elif terms_lower.startswith("net "):
+        try:
+            days = int(terms_lower.split()[1])
+        except (IndexError, ValueError):
+            days = 30  # safe default
+        due = issue + timedelta(days=days)
+    else:
+        due = end_of_month  # fallback for unrecognized terms
     invoice_number = _next_invoice_number(out_dir, month)
     line_label = f"{client.service_description} — {_MONTH_NAMES[mo]} {year}"
     ctx = InvoiceContext(
@@ -49,6 +67,8 @@ def build_invoice_for_client(
         terms=client.billing_terms,
     )
     pdf_path = out_dir / f"{invoice_number}.pdf"
+    if pdf_path.exists():
+        raise FileExistsError(f"refusing to overwrite existing invoice: {pdf_path}")
     render_pdf(ctx, pdf_path)
     return ctx, pdf_path
 
@@ -75,10 +95,18 @@ def main() -> int:
     p.add_argument("--out-dir", default=str(Path.home() / ".hermes" / "invoices"))
     args = p.parse_args()
 
+    try:
+        year_i, mo_i = map(int, args.month.split("-"))
+        if not (1 <= mo_i <= 12 and 2000 <= year_i <= 2100):
+            raise ValueError("month out of range")
+    except ValueError:
+        p.error(f"--month must be YYYY-MM with 4-digit year and 1-12 month, got {args.month!r}")
+    month_norm = f"{year_i:04d}-{mo_i:02d}"
+    year, mo = month_norm.split("-")
+
     cfg = load_config()
-    year, mo = args.month.split("-")
     out_dir = Path(args.out_dir) / year / mo
-    ctx, pdf_path = build_invoice_for_client(cfg, args.client, args.month, out_dir)
+    ctx, pdf_path = build_invoice_for_client(cfg, args.client, month_norm, out_dir)
     subject, body = _compose_email(ctx, cfg)
 
     print(f"Invoice: {ctx.invoice_number}")
