@@ -1,5 +1,4 @@
 from pathlib import Path
-import tomllib
 import pytest
 from hermes.config import load_config, Config, GmailConfig, TelegramConfig, ClientConfig
 
@@ -68,3 +67,120 @@ chat_id = 0
     clients.write_text("# empty")
     cfg = load_config(secrets_path=secrets, clients_path=clients)
     assert cfg.clients == {}
+
+
+def test_active_must_be_real_bool(tmp_path: Path):
+    secrets = tmp_path / "secrets.toml"
+    secrets.write_text("""
+[gmail]
+imap_user = "u@g.com"
+imap_app_password = "x"
+smtp_user = "u@g.com"
+smtp_app_password = "x"
+from_address = "U <u@g.com>"
+reply_to = "U <u@g.com>"
+
+[telegram]
+bot_token = "1:A"
+chat_id = 0
+""")
+    clients = tmp_path / "clients.toml"
+    clients.write_text("""
+[boarhog]
+domain = "boarhog.example"
+contact_email = "billing@boarhog.example"
+billing_amount_cents = 50000
+billing_terms = "Net 30"
+service_description = "Hosting fees"
+active = "yes"
+""")
+    from hermes.config import ConfigError
+    with pytest.raises(ConfigError, match="active"):
+        load_config(secrets_path=secrets, clients_path=clients)
+
+
+def test_missing_gmail_key_reports_path(tmp_path: Path):
+    secrets = tmp_path / "secrets.toml"
+    secrets.write_text("""
+[gmail]
+imap_user = "u@g.com"
+
+[telegram]
+bot_token = "1:A"
+chat_id = 0
+""")
+    clients = tmp_path / "clients.toml"
+    clients.write_text("# empty")
+    from hermes.config import ConfigError
+    with pytest.raises(ConfigError) as exc:
+        load_config(secrets_path=secrets, clients_path=clients)
+    assert "secrets.toml" in str(exc.value) or str(secrets) in str(exc.value)
+
+
+def test_clients_is_immutable(tmp_path: Path):
+    secrets = tmp_path / "secrets.toml"
+    secrets.write_text("""
+[gmail]
+imap_user = "u@g.com"
+imap_app_password = "x"
+smtp_user = "u@g.com"
+smtp_app_password = "x"
+from_address = "U <u@g.com>"
+reply_to = "U <u@g.com>"
+
+[telegram]
+bot_token = "1:A"
+chat_id = 0
+""")
+    clients = tmp_path / "clients.toml"
+    clients.write_text("""
+[boarhog]
+domain = "boarhog.example"
+contact_email = "billing@boarhog.example"
+billing_amount_cents = 50000
+billing_terms = "Net 30"
+service_description = "Hosting fees"
+active = true
+""")
+    cfg = load_config(secrets_path=secrets, clients_path=clients)
+    with pytest.raises(TypeError):
+        cfg.clients["injected"] = None  # type: ignore[index]
+
+
+def test_two_clients_loaded(tmp_path: Path):
+    secrets = tmp_path / "secrets.toml"
+    secrets.write_text("""
+[gmail]
+imap_user = "u@g.com"
+imap_app_password = "x"
+smtp_user = "u@g.com"
+smtp_app_password = "x"
+from_address = "U <u@g.com>"
+reply_to = "U <u@g.com>"
+
+[telegram]
+bot_token = "1:A"
+chat_id = 0
+""")
+    clients = tmp_path / "clients.toml"
+    clients.write_text("""
+[boarhog]
+domain = "boarhog.example"
+contact_email = "billing@boarhog.example"
+billing_amount_cents = 50000
+billing_terms = "Net 30"
+service_description = "Hosting fees"
+active = true
+
+[acme]
+domain = "acme.example"
+contact_email = "ap@acme.example"
+billing_amount_cents = 75000
+billing_terms = "Due on receipt"
+service_description = "Retainer"
+active = false
+""")
+    cfg = load_config(secrets_path=secrets, clients_path=clients)
+    assert set(cfg.clients.keys()) == {"boarhog", "acme"}
+    assert cfg.clients["acme"].active is False
+    assert cfg.clients["acme"].billing_amount_cents == 75000
