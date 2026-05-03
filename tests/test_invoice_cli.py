@@ -119,7 +119,7 @@ def test_compose_email_includes_invoice_metadata():
     assert "Boarhog" in subject
     assert "$500.00" in body
     assert "May 31, 2026" in body
-    assert "Net 30" in body
+    assert "INV-2026-05-001" in body  # invoice number referenced for payment matching
     assert body.endswith("Dylan Beers")
 
 

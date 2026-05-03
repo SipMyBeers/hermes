@@ -101,16 +101,18 @@ def build_invoice_for_client(
 def _compose_email(ctx: InvoiceContext, cfg: Config) -> tuple[str, str]:
     display_name = ctx.bill_to_company or ctx.client_name
     subject = f"Invoice {ctx.invoice_number} — {display_name}"
+    recipient_first = ctx.bill_to_attn.split()[0] if ctx.bill_to_attn else ""
+    greeting = f"Hello {recipient_first}," if recipient_first else "Hello,"
+    line_desc = ctx.line_items[0][0] if ctx.line_items else "the attached service"
     total_dollars = f"${ctx.total_cents / 100:,.2f}"
-    if ctx.due_text:
-        due_phrase = f"due {ctx.due_text.lower()}"
-    else:
-        due_phrase = f"due {ctx.due_date.strftime('%B %d, %Y')} ({ctx.terms})"
-    sig = ctx.signoff or f"Thanks,\n{ctx.from_name}"
+    due_phrase = ctx.due_text or ctx.due_date.strftime("%B %d, %Y")
+    sig = ctx.signoff or f"Thank you for your business.\n\n— {ctx.from_name}"
     body = (
-        f"Hi,\n\n"
-        f"Attached is invoice {ctx.invoice_number} for {total_dollars}, {due_phrase}.\n\n"
-        f"Reply to this email if anything looks off.\n\n"
+        f"{greeting}\n\n"
+        f"Please find attached invoice {ctx.invoice_number} covering "
+        f"{line_desc}, in the amount of {total_dollars}, due {due_phrase}.\n\n"
+        f"Please reference {ctx.invoice_number} with your payment. "
+        f"Reply to this email with any questions.\n\n"
         f"{sig}"
     )
     return subject, body
