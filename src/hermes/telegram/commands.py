@@ -1,5 +1,7 @@
 from __future__ import annotations
+import json
 from datetime import datetime, timezone
+from pathlib import Path
 import sqlite3
 from loguru import logger
 from hermes.config import Config
@@ -18,15 +20,42 @@ HELP_TEXT = """*Hermes commands*
 """
 
 
-def _do_send(cfg: Config, to_addr: str, subject: str, body: str) -> bool:
+def _do_send(
+    cfg: Config,
+    to_addr: str,
+    subject: str,
+    body: str,
+    attachments: list[Path] | None = None,
+) -> bool:
     """Hook so tests can patch SMTP without monkeypatching smtplib."""
-    msg = build_message(cfg.gmail, to_addr, subject, body, [])
+    paths = list(attachments or [])
+    msg = build_message(cfg.gmail, to_addr, subject, body, paths)
     try:
         SmtpSender(cfg.gmail).send(msg)
         return True
     except Exception as e:
         logger.error("send failed: {}", e)
         return False
+
+
+def _parse_attachments(raw: str | None) -> list[Path]:
+    """Parse outbox.attachments column into a list[Path].
+
+    Handles None, empty string, single-path string, and JSON-encoded list.
+    Falls back to single-path interpretation if JSON parsing fails.
+    """
+    if not raw:
+        return []
+    raw = raw.strip()
+    # Try JSON first (future-proof for multi-attachment)
+    if raw.startswith("["):
+        try:
+            paths = json.loads(raw)
+            return [Path(p) for p in paths if p]
+        except (json.JSONDecodeError, TypeError):
+            pass
+    # Fall back: single path string (Task 17's current shape)
+    return [Path(raw)]
 
 
 def handle_update(
@@ -95,16 +124,16 @@ def _cmd_approve(args, cfg, db, tg):
         tg.send_message("Outbox id must be an integer")
         return
     row = db.execute(
-        "SELECT to_addr, subject, body, status FROM outbox WHERE id=?", (oid,)
+        "SELECT to_addr, subject, body, status, attachments FROM outbox WHERE id=?", (oid,)
     ).fetchone()
     if not row:
         tg.send_message(f"No outbox entry with id={oid}")
         return
-    to_addr, subject, body, status = row
+    to_addr, subject, body, status, attachments_raw = row
     if status != "queued":
         tg.send_message(f"Outbox {oid} status={status}, cannot send")
         return
-    ok = _do_send(cfg, to_addr, subject, body)
+    ok = _do_send(cfg, to_addr, subject, body, _parse_attachments(attachments_raw))
     if ok:
         db.execute(
             "UPDATE outbox SET status='sent', sent_at=? WHERE id=?",

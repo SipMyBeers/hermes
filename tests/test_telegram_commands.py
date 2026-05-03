@@ -60,3 +60,36 @@ def test_other_chat_id_ignored(tmp_path):
     update = {"update_id": 4, "message": {"chat": {"id": 99}, "text": "/status"}}
     handle_update(update, _cfg(), db, tg)
     tg.send_message.assert_not_called()
+
+
+def test_approve_passes_attachments_through(tmp_path):
+    """Regression: invoice /approve must include the PDF attachment."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    pdf = tmp_path / "invoice.pdf"
+    pdf.write_bytes(b"%PDF-1.4 stub")
+    db.execute(
+        "INSERT INTO outbox (kind, client, to_addr, subject, body, attachments, status, created_at) "
+        "VALUES ('invoice', 'boarhog', 'a@b.com', 's', 'b', ?, 'queued', '2026-05-02')",
+        (str(pdf),),
+    )
+    tg = MagicMock()
+    import hermes.telegram.commands as cmd
+    captured: dict = {}
+    def fake_send(cfg, to_addr, subject, body, attachments=None):
+        captured["attachments"] = list(attachments or [])
+        return True
+    cmd._do_send = fake_send
+    update = {"update_id": 5, "message": {"chat": {"id": 42}, "text": "/approve 1"}}
+    handle_update(update, _cfg(), db, tg)
+    assert len(captured["attachments"]) == 1
+    assert captured["attachments"][0].name == "invoice.pdf"
+
+
+def test_parse_attachments_handles_shapes():
+    from hermes.telegram.commands import _parse_attachments
+    from pathlib import Path
+    assert _parse_attachments(None) == []
+    assert _parse_attachments("") == []
+    assert _parse_attachments("/tmp/x.pdf") == [Path("/tmp/x.pdf")]
+    assert _parse_attachments('["/tmp/a.pdf","/tmp/b.pdf"]') == [Path("/tmp/a.pdf"), Path("/tmp/b.pdf")]
+    assert _parse_attachments("[malformed") == [Path("[malformed")]  # falls back to single-path
