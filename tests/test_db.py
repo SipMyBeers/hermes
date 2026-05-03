@@ -144,6 +144,24 @@ def test_migrate_v1_to_v2_adds_raw_email_column(tmp_path: Path):
     conn2.close()
 
 
+def test_migrate_v2_to_v3_adds_skeleton_tables(tmp_path: Path):
+    """v2 -> v3 provisions the Phase F skeleton tables additively."""
+    db_path = tmp_path / "t.sqlite"
+    conn = connect(db_path)
+    # Start at v2 by running migrate then forcing user_version back.
+    migrate(conn)
+    conn.execute("PRAGMA user_version = 2")
+    # Drop the v3 tables to simulate a fresh v2 DB without skeleton tables.
+    for t in ("subscriptions", "renewals", "leads", "bookmarks", "feed_items", "feeds"):
+        conn.execute(f"DROP TABLE IF EXISTS {t}")
+    # Now upgrade to v3.
+    migrate(conn)
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert {"subscriptions", "renewals", "leads", "bookmarks", "feeds", "feed_items"}.issubset(tables)
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+    conn.close()
+
+
 def test_messages_can_store_raw_email_blob(tmp_path: Path):
     conn = connect(tmp_path / "t.sqlite")
     migrate(conn)

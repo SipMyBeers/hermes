@@ -2,7 +2,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # Note: databases migrated from a v0/initial install may still have the old
 # `idx_messages_received` single-column index hanging around alongside the
@@ -60,6 +60,72 @@ CREATE INDEX IF NOT EXISTS idx_outbox_status ON outbox(status);
 CREATE INDEX IF NOT EXISTS idx_ledger_month ON ledger(month, direction);
 """
 
+# Phase F: skeleton tables for receipt/sub/lead/renewal/bookmarks/rss features.
+# All additive — no v1/v2 tables are altered.
+_SCHEMA_V3 = """
+CREATE TABLE IF NOT EXISTS subscriptions (
+  vendor TEXT PRIMARY KEY,
+  cadence TEXT NOT NULL CHECK (cadence IN ('monthly','annual','irregular')),
+  amount_cents INTEGER NOT NULL,
+  monthly_estimate_cents INTEGER NOT NULL,
+  occurrences INTEGER NOT NULL,
+  first_seen_at TEXT NOT NULL,
+  last_charge_at TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('active','stale','cancelled'))
+);
+
+CREATE TABLE IF NOT EXISTS renewals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  vendor TEXT NOT NULL,
+  resource TEXT NOT NULL,
+  expires_at TEXT,
+  auto_renew INTEGER NOT NULL DEFAULT 0,
+  cost_cents INTEGER,
+  source_message_id TEXT,
+  notified_at TEXT,
+  UNIQUE(vendor, resource)
+);
+
+CREATE TABLE IF NOT EXISTS leads (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  uid INTEGER NOT NULL,
+  sender TEXT NOT NULL,
+  sender_domain TEXT NOT NULL,
+  reason TEXT,
+  matches TEXT,
+  detected_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS bookmarks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  url TEXT NOT NULL,
+  title TEXT,
+  notes TEXT,
+  saved_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS feeds (
+  url TEXT PRIMARY KEY,
+  name TEXT,
+  last_polled_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS feed_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  feed_url TEXT NOT NULL REFERENCES feeds(url),
+  entry_id TEXT NOT NULL,
+  title TEXT,
+  url TEXT,
+  published_at TEXT,
+  seen_at TEXT NOT NULL,
+  summary TEXT,
+  UNIQUE(feed_url, entry_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_feed_items_seen ON feed_items(seen_at);
+CREATE INDEX IF NOT EXISTS idx_renewals_expires ON renewals(expires_at);
+"""
+
 
 def connect(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -76,14 +142,18 @@ def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
 
 def migrate(conn: sqlite3.Connection) -> None:
     current = conn.execute("PRAGMA user_version").fetchone()[0]
-    if current >= SCHEMA_VERSION:
-        return
-    # v0 -> v1: create everything (idempotent IF NOT EXISTS); the v1 schema
-    # already includes raw_email so a fresh install lands at v2 in one step.
-    conn.executescript(_SCHEMA_V1)
-    # v1 -> v2: existing installs (e.g. ghengis) created the messages table
-    # without raw_email; add it via ALTER. Use _has_column() so re-running the
-    # migration on a partially-upgraded DB is a no-op.
-    if current < 2 and not _has_column(conn, "messages", "raw_email"):
-        conn.execute("ALTER TABLE messages ADD COLUMN raw_email BLOB")
+    if current < 1:
+        # v0 -> v1: create everything (idempotent IF NOT EXISTS); the v1 schema
+        # already includes raw_email so a fresh install picks it up here.
+        conn.executescript(_SCHEMA_V1)
+    if current < 2:
+        # v1 -> v2: existing installs (e.g. ghengis) created the messages table
+        # without raw_email; add it via ALTER. _has_column() guard so re-running
+        # the migration on a partially-upgraded DB is a no-op.
+        if not _has_column(conn, "messages", "raw_email"):
+            conn.execute("ALTER TABLE messages ADD COLUMN raw_email BLOB")
+    if current < 3:
+        # v2 -> v3: provision Phase F skeleton tables (subs, renewals, leads,
+        # bookmarks, feeds, feed_items). All IF NOT EXISTS / additive.
+        conn.executescript(_SCHEMA_V3)
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
