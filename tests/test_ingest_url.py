@@ -42,11 +42,33 @@ def test_ingest_web_persists_and_returns(tmp_path):
     assert json.loads(rows[0][2]) == ["Read it"]
 
 
-def test_ingest_video_returns_error_with_v13_message(tmp_path):
+def test_ingest_video_uses_video_extractor(tmp_path):
+    """Video URLs route to extract_video (yt-dlp + whisper) and get summarized."""
     db = connect(tmp_path / "t.sqlite"); migrate(db)
-    d = ingest("https://www.instagram.com/reel/abc/", db)
+    fake_doc = ExtractedDoc(title="Cool Reel",
+                             text="this is the spoken transcript",
+                             url="https://www.instagram.com/reel/abc/")
+    fake_summary = ContentSummary(summary="A reel about productivity hacks.",
+                                   actions=("Try the third tip",),
+                                   tools=())
+    # extract_video is imported lazily inside ingest(), patch at the source module.
+    with patch("hermes.ingest.video.extract_video", return_value=fake_doc), \
+         patch("hermes.ingest.url.summarize", return_value=fake_summary):
+        d = ingest("https://www.instagram.com/reel/abc/", db)
     assert d.kind == "video"
-    assert "v1.3" in d.error
+    assert d.title == "Cool Reel"
+    assert d.summary == "A reel about productivity hacks."
+    assert d.error == ""
+
+
+def test_ingest_video_records_yt_dlp_failure(tmp_path):
+    """When yt-dlp can't fetch (private/auth), surface the error in the row."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    with patch("hermes.ingest.video.extract_video",
+               side_effect=RuntimeError("yt-dlp failed (rc=1): Private video")):
+        d = ingest("https://www.instagram.com/reel/private/", db)
+    assert d.kind == "video"
+    assert "yt-dlp failed" in d.error
     assert d.summary == ""
 
 
