@@ -16,6 +16,19 @@ class TelegramClient:
             json={"chat_id": self.chat_id, "text": text, "parse_mode": parse_mode},
             timeout=15,
         )
+        if resp.status_code == 400 and parse_mode:
+            # Telegram rejects the Markdown — retry as plain text so the user
+            # sees the message even if formatting breaks (long file paths, code,
+            # raw error bodies often contain `_*[]` that confuse the Markdown
+            # parser).
+            logger.warning(
+                "telegram 400 with parse_mode={}; retrying as plain text", parse_mode
+            )
+            resp = httpx.post(
+                f"{self.base}/sendMessage",
+                json={"chat_id": self.chat_id, "text": text},
+                timeout=15,
+            )
         resp.raise_for_status()
         return resp.json()
 
