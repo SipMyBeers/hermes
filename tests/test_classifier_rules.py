@@ -86,33 +86,46 @@ def test_missing_headers_are_safe():
     assert r.confidence == 0.0
 
 
-def test_noreply_sender_classified_as_promo():
+def test_skool_domain_classified_as_promo():
+    """skool.com is on the newsletter-platform allowlist."""
     msg = _make_msg("Skool <noreply@skool.com>", "New post", "body")
     r = classify(msg, client_domains={}, personal_allowlist=set())
     assert r.label == "promo"
-    assert "local-part" in r.reason or "newsletter" in r.reason
-
-
-def test_marketing_sender_classified_as_promo():
-    msg = _make_msg("Brand <marketing@somesite.com>", "Big sale", "body")
-    r = classify(msg, client_domains={}, personal_allowlist=set())
-    assert r.label == "promo"
+    assert "newsletter platform" in r.reason
 
 
 def test_substack_domain_classified_as_promo():
     msg = _make_msg("Author <author@substack.com>", "Weekly post", "body")
     r = classify(msg, client_domains={}, personal_allowlist=set())
     assert r.label == "promo"
+    assert "newsletter platform" in r.reason
 
 
-def test_known_client_overrides_promo_local_part():
-    """If a client domain is in the allowlist, even a noreply@<client> stays a client.
-    Edge case but worth pinning so a future SaaS-style client at noreply@theirdomain
-    still gets pinged as a client."""
+def test_github_notifications_not_classified_as_promo():
+    """Regression: notifications@github.com is a real ops signal (CI failures,
+    PR reviews) and must NOT be auto-classified as promo by a bare-prefix rule.
+    Falls through to the LLM tier."""
+    msg = _make_msg("GitHub <notifications@github.com>",
+                    "[user/repo] Run failed: Deploy", "stack trace here")
+    r = classify(msg, client_domains={}, personal_allowlist=set())
+    assert r.label == "unknown"
+
+
+def test_cointracker_transactional_not_classified_as_promo():
+    """Regression: hello@mail.cointracker.io is transactional (portfolio sync
+    notifications), not marketing. Must fall through to the LLM tier rather
+    than being mis-flagged by a bare-prefix rule."""
+    msg = _make_msg("CoinTracker <hello@mail.cointracker.io>",
+                    "Crypto portfolio update", "your portfolio synced")
+    r = classify(msg, client_domains={}, personal_allowlist=set())
+    assert r.label == "unknown"
+
+
+def test_client_domain_with_noreply_local_still_classifies_as_client():
+    """A SaaS-style client that happens to send from noreply@<theirdomain>
+    must still be classified as client, not promo."""
     msg = _make_msg("Acme <noreply@acme.example>", "Update", "body")
     hints = {"acme.example": ClientHint(client="acme")}
-    # The promo local-part rule fires first under the current ordering. Document
-    # that in the test name; if we ever want client to win, change the rule order.
     r = classify(msg, client_domains=hints, personal_allowlist=set())
-    # Per the documented priority order, promo wins:
-    assert r.label == "promo"
+    assert r.label == "client"
+    assert r.client == "acme"
