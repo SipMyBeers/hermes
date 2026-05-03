@@ -17,6 +17,8 @@ hermes-tg = "hermes.telegram.daemon:main"
 hermes-invoice = "hermes.invoice.job:main"
 hermes-invoice-cli = "hermes.invoice.cli:main"
 hermes-digest = "hermes.digest.job:main"
+hermes-stale = "hermes.stale.job:main"
+hermes-bookmarks-weekly = "hermes.bookmarks.job:main"
 
 [dependency-groups]
 dev = [
