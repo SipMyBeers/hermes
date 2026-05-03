@@ -44,6 +44,11 @@ chat_id = 0
 
 [digest]
 evening_report = false
+
+[mail]
+# When true, classified promos go to Gmail Trash (auto-purges in 30d).
+# When false, promos are archived (kept under "All Mail").
+delete_promos = true
 EOF
   chmod 600 "${CFG_DIR}/secrets.toml"
   echo "    edit ${CFG_DIR}/secrets.toml then re-run this script"
