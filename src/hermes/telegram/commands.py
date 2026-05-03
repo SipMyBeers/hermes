@@ -8,15 +8,16 @@ from hermes.config import Config
 from hermes.mail.smtp_client import SmtpSender, build_message
 from hermes.telegram.client import TelegramClient
 
-HELP_TEXT = """*Hermes commands*
-/status — daemon health + last-24h counts
-/digest — on-demand morning report
-/approve <id> — send queued draft/invoice
-/reject <id> — discard
-/invoice <client> [YYYY-MM] — generate invoice
-/client list — show clients
-/reclassify <uid> <label> — fix a wrong classification
-/retry <id> — retry failed outbound
+HELP_TEXT = """*Hermes Commands*
+
+/status — Daemon status and 24-hour message counts.
+/digest — Generate the morning report on demand.
+/approve <id> — Send the queued draft or invoice.
+/reject <id> — Discard a queued item.
+/retry <id> — Retry a failed send.
+/invoice <client> [YYYY-MM] — Render an invoice for a client.
+/client list — List configured clients.
+/reclassify <uid> <label> — Correct a message classification.
 """
 
 
