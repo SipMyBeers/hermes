@@ -2,7 +2,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # Note: databases migrated from a v0/initial install may still have the old
 # `idx_messages_received` single-column index hanging around alongside the
@@ -21,7 +21,8 @@ CREATE TABLE IF NOT EXISTS messages (
   label TEXT,
   draft_text TEXT,
   drafted_at TEXT,
-  notified_at TEXT
+  notified_at TEXT,
+  raw_email BLOB
 );
 
 CREATE TABLE IF NOT EXISTS ledger (
@@ -68,9 +69,21 @@ def connect(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
+def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return any(r[1] == column for r in rows)
+
+
 def migrate(conn: sqlite3.Connection) -> None:
     current = conn.execute("PRAGMA user_version").fetchone()[0]
     if current >= SCHEMA_VERSION:
         return
+    # v0 -> v1: create everything (idempotent IF NOT EXISTS); the v1 schema
+    # already includes raw_email so a fresh install lands at v2 in one step.
     conn.executescript(_SCHEMA_V1)
+    # v1 -> v2: existing installs (e.g. ghengis) created the messages table
+    # without raw_email; add it via ALTER. Use _has_column() so re-running the
+    # migration on a partially-upgraded DB is a no-op.
+    if current < 2 and not _has_column(conn, "messages", "raw_email"):
+        conn.execute("ALTER TABLE messages ADD COLUMN raw_email BLOB")
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")

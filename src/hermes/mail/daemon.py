@@ -103,15 +103,20 @@ def process_message(
     if classification.label == "client" and drafter is not None:
         draft = drafter(msg, "Dylan")
 
+    # Persist the full RFC822 bytes so the morning digest can re-parse the
+    # message and run gemma4 enrichment without going back to IMAP. Skipped
+    # only for promos (we never resurface them) to keep the DB lean.
+    raw = None if classification.label == "promo" else msg.as_bytes()
     db.execute(
         "INSERT OR IGNORE INTO messages "
         "(uid, message_id, received_at, sender, subject, classification, classifier, "
-        "confidence, label, draft_text, drafted_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "confidence, label, draft_text, drafted_at, raw_email) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             uid, message_id, received, sender, subject,
             classification.label, classification.classifier, classification.confidence,
             label, draft, datetime.now(timezone.utc).isoformat() if draft else None,
+            raw,
         ),
     )
     try:
@@ -141,13 +146,14 @@ def _bootstrap_anchor(db: sqlite3.Connection, imap: ImapClient) -> int:
         # Persist a sentinel row so subsequent calls don't re-anchor.
         db.execute(
             "INSERT OR IGNORE INTO messages "
-            "(uid, message_id, received_at, sender, subject, classification, classifier, confidence) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "(uid, message_id, received_at, sender, subject, classification, classifier, confidence, raw_email) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 anchor, f"hermes-bootstrap-{anchor}",
                 datetime.now(timezone.utc).isoformat(),
                 "<bootstrap>", "<initial anchor>",
                 "other", "user", 1.0,
+                None,
             ),
         )
         logger.info("first-run anchor set to uid={}; backlog skipped", anchor)
