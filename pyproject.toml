@@ -1,0 +1,39 @@
+[project]
+name = "hermes"
+version = "0.1.0"
+description = "Email triage and invoicing agent for ghengis"
+requires-python = ">=3.12"
+dependencies = [
+    "imap-tools>=1.6",
+    "httpx>=0.27",
+    "jinja2>=3.1",
+    "weasyprint>=62",
+    "loguru>=0.7",
+]
+
+[project.scripts]
+hermes-mail = "hermes.mail.daemon:main"
+hermes-tg = "hermes.telegram.daemon:main"
+hermes-invoice = "hermes.invoice.job:main"
+hermes-invoice-cli = "hermes.invoice.cli:main"
+hermes-digest = "hermes.digest.job:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-mock>=3",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+
+[tool.ruff]
+line-length = 100
+
+[tool.uv]
+package = true
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

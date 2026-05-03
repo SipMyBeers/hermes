@@ -1,0 +1,10 @@
+# Hermes client billing config. Secrets live in ~/.config/hermes/secrets.toml.
+# Add a section per client:
+#
+# [client_key]
+# domain = "example.com"
+# contact_email = "billing@example.com"
+# billing_amount_cents = 50000
+# billing_terms = "Net 30"
+# service_description = "Hosting fees"
+# active = true
