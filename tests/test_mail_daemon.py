@@ -178,3 +178,53 @@ def test_classify_message_llm_io_failure_marks_classifier_rule():
     assert result.label == "review"
     assert result.classifier == "rule"
     assert "llm unavailable" in result.reason
+
+
+def test_lead_detection_persists_and_pings(tmp_path):
+    """An unknown-sender business inquiry is recorded as a lead and pinged."""
+    from hermes.db import connect, migrate
+    db = connect(tmp_path / "t.sqlite")
+    migrate(db)
+    raw = (
+        b"From: Casey <casey@unknown.io>\r\n"
+        b"To: dz@gmail.com\r\n"
+        b"Subject: Project inquiry\r\n"
+        b"Date: Fri, 02 May 2026 10:00:00 +0000\r\n"
+        b"Message-ID: <lead-1@unknown.io>\r\n"
+        b"\r\n"
+        b"Saw your portfolio. Looking to hire for a project. Have a budget.\r\n"
+    )
+    msg = message_from_bytes(raw)
+    fake_imap = MagicMock()
+    import hermes.mail.daemon as dmod
+    fake_tg = MagicMock()
+    dmod._telegram = lambda cfg: fake_tg
+    process_message(uid=200, msg=msg, db=db, cfg=_cfg(), imap=fake_imap,
+                    llm_classifier=None, drafter=None)
+    rows = list(db.execute("SELECT uid, sender_domain, reason FROM leads"))
+    assert rows == [(200, "unknown.io", "unknown sender + outreach signals")]
+    label_calls = [c.args[1] for c in fake_imap.apply_label.call_args_list]
+    assert "Hermes/Lead" in label_calls
+    fake_tg.send_message.assert_called_once()
+    text = fake_tg.send_message.call_args.args[0]
+    assert "New lead" in text
+    assert "unknown.io" in text
+
+
+def test_known_client_does_not_get_lead_label(tmp_path):
+    """A message from a known client domain must not be flagged as a lead."""
+    from hermes.db import connect, migrate
+    db = connect(tmp_path / "t.sqlite")
+    migrate(db)
+    msg = message_from_bytes((FIXTURES / "client_boarhog.eml").read_bytes())
+    fake_imap = MagicMock()
+    import hermes.mail.daemon as dmod
+    fake_tg = MagicMock()
+    dmod._telegram = lambda cfg: fake_tg
+    process_message(uid=201, msg=msg, db=db, cfg=_cfg(), imap=fake_imap,
+                    llm_classifier=None, drafter=None)
+    rows = list(db.execute("SELECT COUNT(*) FROM leads"))
+    assert rows[0][0] == 0
+    label_calls = [c.args[1] for c in fake_imap.apply_label.call_args_list]
+    assert "Hermes/Lead" not in label_calls
+    fake_tg.send_message.assert_not_called()

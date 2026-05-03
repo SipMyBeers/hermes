@@ -14,7 +14,9 @@ from hermes.classifier.rules import classify as rule_classify, ClientHint
 from hermes.classifier.llm import classify_llm, LLMResult
 from hermes.classifier.drafter import draft_reply
 from hermes.db import connect, migrate
+from hermes.extract.lead import detect_lead, LeadSignal
 from hermes.mail.imap_client import ImapClient
+from hermes.telegram.client import TelegramClient
 
 LLM_THRESHOLD = 0.75
 
@@ -70,6 +72,23 @@ def _label_for(c: Classification) -> str:
     if c.label == "client" and c.client:
         return f"Hermes/Client/{c.client}"
     return f"Hermes/{c.label.capitalize()}"
+
+
+def _persist_lead(db: sqlite3.Connection, uid: int, lead: LeadSignal) -> None:
+    db.execute(
+        "INSERT INTO leads(uid, sender, sender_domain, reason, matches, detected_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (
+            uid, lead.sender, lead.sender_domain, lead.reason,
+            ", ".join(lead.matches),
+            datetime.now(timezone.utc).isoformat(),
+        ),
+    )
+
+
+def _telegram(cfg: Config) -> TelegramClient:
+    """Lazy Telegram instance for lead pings. Module-level so tests can rebind."""
+    return TelegramClient(cfg.telegram.bot_token, cfg.telegram.chat_id)
 
 
 def process_message(
@@ -128,6 +147,30 @@ def process_message(
                 imap.archive(uid)
     except Exception as e:
         logger.error("imap label failed uid={} err={}", uid, e)
+
+    # Lead detection runs alongside classification, not in place of it.
+    # A message can be both classified as 'review' AND a lead — both labels apply.
+    # Skipped for promos since they're being trashed/archived anyway.
+    if classification.label != "promo":
+        known_domains = {c.domain.lower() for c in cfg.clients.values() if c.domain}
+        lead = detect_lead(msg, known_client_domains=known_domains)
+        if lead.is_lead:
+            _persist_lead(db, uid, lead)
+            try:
+                imap.apply_label(uid, "Hermes/Lead")
+            except Exception as e:
+                logger.error("imap lead-label failed uid={} err={}", uid, e)
+            try:
+                subj = subject[:140]
+                _telegram(cfg).send_message(
+                    f"🆕 *New lead*\n"
+                    f"From: {lead.sender}\n"
+                    f"Subject: {subj}\n"
+                    f"Why: {lead.reason}\n"
+                    f"`/draft {uid}` · `/reclassify {uid} other` to dismiss"
+                )
+            except Exception as e:
+                logger.warning("lead telegram ping failed: {}", e)
 
 
 def _last_uid(db: sqlite3.Connection) -> int:

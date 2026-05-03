@@ -8,14 +8,15 @@ from email.message import Message
 from email.utils import getaddresses
 import re
 
+# Non-capturing groups so re.findall returns full match strings, not tuples.
 _LEAD_PATTERNS = [
     r"\bproposal\b", r"\bquote\b", r"\bestimate\b",
-    r"\binterested in (your|the)\b", r"\blooking to (hire|work)\b",
-    r"\bbudget\b", r"\bproject\b.*\b(timeline|scope)\b",
-    r"\bcan (you|we) (build|help|work)\b",
-    r"\bsaw your (work|portfolio|website)\b",
-    r"\breach(ed|ing) out\b",
-    r"\binquir(e|y|ing)\b",
+    r"\binterested in (?:your|the)\b", r"\blooking to (?:hire|work)\b",
+    r"\bbudget\b", r"\bproject\b.*\b(?:timeline|scope)\b",
+    r"\bcan (?:you|we) (?:build|help|work)\b",
+    r"\bsaw your (?:work|portfolio|website)\b",
+    r"\breach(?:ed|ing) out\b",
+    r"\binquir(?:e|y|ing)\b",
 ]
 _LEAD_RE = re.compile("|".join(_LEAD_PATTERNS), re.IGNORECASE)
 
