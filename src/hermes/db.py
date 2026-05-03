@@ -4,6 +4,10 @@ from pathlib import Path
 
 SCHEMA_VERSION = 1
 
+# Note: databases migrated from a v0/initial install may still have the old
+# `idx_messages_received` single-column index hanging around alongside the
+# new composite `idx_messages_class_received`. It's harmless — SQLite ignores
+# unused indexes — and we don't bother dropping it on migrate.
 _SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS messages (
   uid INTEGER PRIMARY KEY,
@@ -11,23 +15,13 @@ CREATE TABLE IF NOT EXISTS messages (
   received_at TEXT NOT NULL,
   sender TEXT NOT NULL,
   subject TEXT,
-  classification TEXT NOT NULL,
-  classifier TEXT NOT NULL,
+  classification TEXT NOT NULL CHECK (classification IN ('promo','client','personal','transactional','review','other','unknown')),
+  classifier TEXT NOT NULL CHECK (classifier IN ('rule','llm','user')),
   confidence REAL,
   label TEXT,
   draft_text TEXT,
   drafted_at TEXT,
   notified_at TEXT
-);
-
-CREATE TABLE IF NOT EXISTS clients (
-  name TEXT PRIMARY KEY,
-  domain TEXT,
-  contact_email TEXT NOT NULL,
-  billing_amount_cents INTEGER,
-  billing_terms TEXT,
-  service_description TEXT,
-  active INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS ledger (
@@ -60,7 +54,7 @@ CREATE TABLE IF NOT EXISTS outbox (
   sent_at TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_messages_received ON messages(received_at);
+CREATE INDEX IF NOT EXISTS idx_messages_class_received ON messages(classification, received_at);
 CREATE INDEX IF NOT EXISTS idx_outbox_status ON outbox(status);
 CREATE INDEX IF NOT EXISTS idx_ledger_month ON ledger(month, direction);
 """
@@ -70,7 +64,7 @@ def connect(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path, isolation_level=None)  # autocommit
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA busy_timeout=5000")  # ms — concurrent writer waits
     return conn
 
 
