@@ -18,6 +18,31 @@ def _decode(value: object) -> str:
     except Exception:
         return str(value)
 
+
+def _short_sender(raw: str) -> str:
+    """'Casey <casey@unknown.io>' -> 'Casey'; 'casey@unknown.io' -> 'casey@unknown.io'."""
+    s = (raw or "").strip()
+    if not s:
+        return ""
+    # 'Display <addr@host>' shape: take everything before the first <
+    if "<" in s:
+        name = s.split("<", 1)[0].strip().strip('"').strip("'")
+        if name:
+            return name
+        # No display name; fall back to addr
+        return s.split("<", 1)[1].split(">", 1)[0]
+    return s
+
+
+def _short_subject(raw: str, max_len: int = 80) -> str:
+    """Collapse internal whitespace and truncate to max_len with a single
+    Unicode ellipsis (NOT three dots)."""
+    s = (raw or "").strip().replace("\n", " ").replace("\r", " ")
+    s = " ".join(s.split())  # collapse internal whitespace
+    if len(s) > max_len:
+        return s[: max_len - 1].rstrip() + "…"
+    return s
+
 # Cap how many emails we enrich in one digest. Each gemma4 call is ~3-8s,
 # so 15 puts the worst-case digest job at a couple minutes — fine for cron.
 _MAX_INTERESTING = 15
@@ -121,7 +146,9 @@ def build_morning_digest(
         for uid, sender, subject, raw in interesting[:_MAX_INTERESTING]:
             brief = enrich_one(raw)
             lines.append("")
-            lines.append(f"• `[{uid}]` *{subject}* — {sender}")
+            lines.append(
+                f"• `[{uid}]` *{_short_subject(subject)}* — {_short_sender(sender)}"
+            )
             if brief and brief.summary:
                 lines.append(f"  {brief.summary}")
             if brief and brief.actions:
@@ -129,12 +156,21 @@ def build_morning_digest(
                 for a in brief.actions:
                     lines.append(f"    – {a}")
             if brief and brief.tools:
-                lines.append("  *Tools mentioned:*")
-                for t in brief.tools:
-                    if t.description:
-                        lines.append(f"    – *{t.name}* — {t.description}")
-                    else:
-                        lines.append(f"    – *{t.name}*")
+                # Skip tools whose name already appears in the subject — if the
+                # email IS about that tool, listing it as "mentioned" is redundant
+                # noise. Case-insensitive substring match against the subject.
+                subj_lower = (subject or "").lower()
+                interesting_tools = [
+                    t for t in brief.tools
+                    if (t.name or "").lower() not in subj_lower
+                ]
+                if interesting_tools:
+                    lines.append("  *Tools mentioned:*")
+                    for t in interesting_tools:
+                        if t.description:
+                            lines.append(f"    – *{t.name}* — {t.description}")
+                        else:
+                            lines.append(f"    – *{t.name}*")
         if len(interesting) > _MAX_INTERESTING:
             lines.append("")
             lines.append(f"  …and {len(interesting) - _MAX_INTERESTING} more (truncated).")

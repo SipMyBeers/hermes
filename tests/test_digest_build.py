@@ -171,6 +171,58 @@ def test_digest_excludes_bootstrap_sentinel_row(tmp_path):
     assert "<initial anchor>" not in text
 
 
+def test_short_sender_extracts_display_name():
+    from hermes.digest.build import _short_sender
+    assert _short_sender("Casey <casey@unknown.io>") == "Casey"
+    assert _short_sender("casey@unknown.io") == "casey@unknown.io"
+    assert _short_sender("") == ""
+    assert _short_sender("\"Casey, CTO\" <casey@x.com>") == "Casey, CTO"
+
+
+def test_short_subject_truncates_and_collapses():
+    from hermes.digest.build import _short_subject
+    assert _short_subject("hello") == "hello"
+    long = "a" * 100
+    short = _short_subject(long, max_len=80)
+    assert len(short) <= 80
+    assert short.endswith("…")
+    assert _short_subject("a\nb\rc") == "a b c"
+
+
+def test_digest_uses_short_sender_in_per_email_block(tmp_path):
+    """Verbose 'Display <addr>' should render as just 'Display' in the brief."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    now = datetime.now(timezone.utc).isoformat()
+    db.execute(
+        "INSERT INTO messages(uid, message_id, received_at, sender, subject, "
+        "classification, classifier, confidence) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (501, "m-501", now, "CoinTracker <hello@mail.cointracker.io>",
+         "Crypto portfolio update", "review", "llm", 0.6),
+    )
+    text = build_morning_digest(db, _cfg(), enrich_one=_NO_ENRICH)
+    assert "CoinTracker" in text
+    assert "hello@mail.cointracker.io" not in text
+
+
+def test_digest_skips_tools_block_when_tool_name_in_subject(tmp_path):
+    """If the email is *about* CoinTracker and the only tool spotted is
+    CoinTracker, don't surface the redundant 'Tools mentioned' block."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    now = datetime.now(timezone.utc).isoformat()
+    db.execute(
+        "INSERT INTO messages(uid, message_id, received_at, sender, subject, "
+        "classification, classifier, confidence) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (502, "m-502", now, "CoinTracker <hello@cointracker.io>",
+         "Crypto portfolio update from CoinTracker", "review", "llm", 0.6),
+    )
+    fake_brief = EmailBrief(summary="Sync your wallets.", actions=("Sync",),
+                             tools=(Tool(name="CoinTracker", description="x"),))
+    text = build_morning_digest(db, _cfg(), enrich_one=lambda raw: fake_brief)
+    assert "Tools mentioned" not in text
+
+
 def test_digest_decodes_encoded_word_subjects(tmp_path):
     """RFC 2047 =?UTF-8?B?...?= subjects must be rendered as plain text."""
     db = connect(tmp_path / "t.sqlite"); migrate(db)
