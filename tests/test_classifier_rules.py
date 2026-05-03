@@ -43,3 +43,35 @@ def test_ambiguous_returns_unknown():
     r = classify(_msg("ambiguous.eml"), client_domains={}, personal_allowlist=set())
     assert r.label == "unknown"
     assert r.confidence == 0.0
+
+
+def test_personal_allowlist_beats_client_domain():
+    """Personal allowlist is more specific than a domain match — allowlist wins."""
+    hints = {"example.com": ClientHint(client="acme")}
+    # personal.eml is 'mom@example.com' — domain matches the allowlist below
+    r = classify(
+        _msg("personal.eml"),
+        client_domains=hints,
+        personal_allowlist={"mom@example.com"},
+    )
+    assert r.label == "personal"
+
+
+def test_list_unsubscribe_beats_client_domain():
+    """A client sending a marketing newsletter (with List-Unsubscribe) is promo,
+    not client. Documented behavior: promo always wins over domain match.
+    Re-evaluate this if it causes false negatives on real client mail."""
+    hints = {"amazon.com": ClientHint(client="amazon")}
+    r = classify(_msg("promo_amazon.eml"), client_domains=hints, personal_allowlist=set())
+    assert r.label == "promo"
+
+
+def test_missing_headers_are_safe():
+    """Subject missing or From empty must not crash."""
+    from email.message import Message
+    msg = Message()
+    msg["From"] = ""
+    # No Subject header at all
+    r = classify(msg, client_domains={}, personal_allowlist=set())
+    assert r.label == "unknown"
+    assert r.confidence == 0.0

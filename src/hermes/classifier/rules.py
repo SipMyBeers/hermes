@@ -1,3 +1,14 @@
+"""Tier-1 rule classifier.
+
+Rules are evaluated in priority order; the first match wins:
+
+  1. List-Unsubscribe header  -> promo  (subscription marketing always wins)
+  2. Sender in personal allowlist -> personal  (allowlist is more specific than domain)
+  3. Sender domain matches a client -> client
+  4. Subject matches a transactional pattern -> transactional (confidence 0.9
+     bypasses the LLM tier-2 threshold of 0.75 by design)
+  5. Otherwise -> unknown (caller's tier-2 LLM handles)
+"""
 from __future__ import annotations
 from dataclasses import dataclass
 from email.message import Message
