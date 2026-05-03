@@ -123,3 +123,29 @@ def test_save_with_no_args_shows_usage(tmp_path):
     update = {"update_id": 12, "message": {"chat": {"id": 42}, "text": "/save"}}
     handle_update(update, _cfg(), db, tg)
     assert "Usage:" in tg.send_message.call_args.args[0]
+
+
+def test_bare_url_triggers_read(tmp_path):
+    """A plain URL (no /read prefix) should be ingested."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    tg = MagicMock()
+    captured = {}
+    def fake_ingest(url, db, source_chat_id=None):
+        captured["url"] = url
+        from hermes.ingest.url import Digestion
+        return Digestion(id=1, url=url, kind="web", title="T", summary="S",
+                         actions=(), tools=(), error="")
+    import hermes.telegram.commands as cmd
+    cmd.ingest = fake_ingest
+    update = {"update_id": 50, "message": {"chat": {"id": 42},
+              "text": "https://example.com/article"}}
+    handle_update(update, _cfg(), db, tg)
+    assert captured.get("url") == "https://example.com/article"
+
+
+def test_read_command_with_no_args_shows_usage(tmp_path):
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    tg = MagicMock()
+    update = {"update_id": 51, "message": {"chat": {"id": 42}, "text": "/read"}}
+    handle_update(update, _cfg(), db, tg)
+    assert "Usage:" in tg.send_message.call_args.args[0]

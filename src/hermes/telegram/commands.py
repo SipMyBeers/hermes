@@ -6,6 +6,7 @@ import sqlite3
 from loguru import logger
 from hermes.bookmarks.store import save_bookmark
 from hermes.config import Config
+from hermes.ingest.url import ingest, find_url, URL_RE  # noqa: F401  (URL_RE re-exported)
 from hermes.mail.smtp_client import SmtpSender, build_message
 from hermes.telegram.client import TelegramClient
 
@@ -17,6 +18,7 @@ HELP_TEXT = """*Hermes Commands*
 /reject <id> — Discard a queued item.
 /retry <id> — Retry a failed send.
 /save <url> [notes...] — Save a bookmark for the weekly digest.
+/read <url> — Ingest a URL and reply with summary + actions + tools.
 /invoice <client> [YYYY-MM] — Render an invoice for a client.
 /client list — List configured clients.
 /reclassify <uid> <label> — Correct a message classification.
@@ -75,6 +77,11 @@ def handle_update(
         return
     text = (msg.get("text") or "").strip()
     if not text.startswith("/"):
+        # Bare URL? Treat as /read.
+        url = find_url(text)
+        if url:
+            _ingest_and_reply(url, cfg, db, tg)
+            return
         tg.send_message(HELP_TEXT)
         return
     parts = text.split()
@@ -87,6 +94,7 @@ def handle_update(
         "/approve": _cmd_approve,
         "/reject": _cmd_reject,
         "/save": _cmd_save,
+        "/read": _cmd_read,
         "/help": lambda *a: tg.send_message(HELP_TEXT),
         "/start": lambda *a: tg.send_message(HELP_TEXT),
     }
@@ -176,3 +184,42 @@ def _cmd_save(args, cfg, db, tg):
     if notes:
         msg += f"\n{notes}"
     tg.send_message(msg)
+
+
+def _cmd_read(args, cfg, db, tg):
+    if not args:
+        tg.send_message("Usage: /read <url>")
+        return
+    url = args[0]
+    if not url.startswith(("http://", "https://")):
+        tg.send_message(f"That doesn't look like a URL: {url}")
+        return
+    _ingest_and_reply(url, cfg, db, tg)
+
+
+def _ingest_and_reply(url: str, cfg, db, tg) -> None:
+    """Shared ingest path used by /read and the bare-URL detector."""
+    tg.send_message(f"📥 Reading {url} …")
+    d = ingest(url, db, source_chat_id=cfg.telegram.chat_id)
+    if d.error:
+        tg.send_message(f"⚠ Couldn't ingest #{d.id}\n{url}\n{d.error}")
+        return
+    lines = [f"🔖 *#{d.id}* {d.title or url}"]
+    if d.summary:
+        lines.append(d.summary)
+    if d.actions:
+        lines.append("")
+        lines.append("*Actions:*")
+        for a in d.actions:
+            lines.append(f"  – {a}")
+    if d.tools:
+        lines.append("")
+        lines.append("*Tools mentioned:*")
+        for t in d.tools:
+            name = t.get("name", "")
+            desc = t.get("description", "")
+            if name and desc:
+                lines.append(f"  – *{name}* — {desc}")
+            elif name:
+                lines.append(f"  – *{name}*")
+    tg.send_message("\n".join(lines))
