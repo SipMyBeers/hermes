@@ -56,12 +56,14 @@ if grep -q "REPLACE_ME" "${CFG_DIR}/secrets.toml"; then
 fi
 
 echo "==> installing launchd plists"
+# Use launchctl load -w (older API) instead of bootstrap. The bootstrap
+# command requires a GUI domain which fails over SSH (Input/output error).
+# load -w works in any session and persists the plist enabled state.
 for plist in ops/launchd/com.beers.hermes-*.plist; do
   name="$(basename "$plist")"
   cp -f "$plist" "${LAUNCH_DIR}/${name}"
-  # bootstrap into user domain (idempotent — bootout first if loaded)
-  launchctl bootout "gui/$(id -u)/${name%.plist}" 2>/dev/null || true
-  launchctl bootstrap "gui/$(id -u)" "${LAUNCH_DIR}/${name}"
+  launchctl unload "${LAUNCH_DIR}/${name}" 2>/dev/null || true
+  launchctl load -w "${LAUNCH_DIR}/${name}"
   echo "    loaded ${name}"
 done
 
