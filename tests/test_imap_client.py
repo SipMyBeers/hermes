@@ -30,3 +30,23 @@ def test_imap_client_apply_label_uses_gmail_extension():
     args = fake_box.client.uid.call_args.args
     assert args[0] == "STORE"
     assert "X-GM-LABELS" in args[2]
+
+
+def test_imap_client_move_to_trash_uses_gmail_trash_label():
+    """move_to_trash adds \\Trash and removes \\Inbox via Gmail X-GM-LABELS."""
+    fake_box = MagicMock()
+    ic = ImapClient(_gmail())
+    ic._box = fake_box
+    ic.move_to_trash(uid=99)
+    # Two STORE calls: +Trash then -Inbox
+    calls = fake_box.client.uid.call_args_list
+    assert len(calls) == 2
+    add_args = calls[0].args
+    rm_args = calls[1].args
+    assert add_args[0] == "STORE"
+    assert add_args[1] == "99"
+    assert add_args[2] == "+X-GM-LABELS"
+    assert "Trash" in add_args[3]
+    assert rm_args[0] == "STORE"
+    assert rm_args[2] == "-X-GM-LABELS"
+    assert "Inbox" in rm_args[3]

@@ -56,6 +56,18 @@ class ImapClient:
         # Remove \\Inbox label = archive
         self._box.client.uid("STORE", str(uid), "-X-GM-LABELS", '"\\\\Inbox"')
 
+    def move_to_trash(self, uid: int) -> None:
+        """Move a message to Gmail Trash via the X-GM-LABELS extension.
+
+        Adding \\Trash + removing \\Inbox sends the message to Trash where
+        Gmail auto-purges in 30 days. Idempotent — applying twice is a
+        no-op for the second call.
+        """
+        assert self._box, "call connect() first"
+        self._box.client.uid("STORE", str(uid), "+X-GM-LABELS", '"\\\\Trash"')
+        self._box.client.uid("STORE", str(uid), "-X-GM-LABELS", '"\\\\Inbox"')
+        logger.debug("imap trash uid={}", uid)
+
     def idle(self, timeout: int = 29 * 60) -> bool:
         """Block until new mail or timeout. Returns True if new mail arrived."""
         assert self._box, "call connect() first"
