@@ -1,0 +1,12 @@
+# Hermes weekly availability windows. Symbol used by hermes.calendar.slots.
+# All times are local to the configured timezone.
+timezone = "America/Los_Angeles"
+
+[windows]
+monday    = ["09:00-12:00", "14:00-17:00"]
+tuesday   = ["09:00-12:00", "14:00-17:00"]
+wednesday = ["09:00-12:00", "14:00-17:00"]
+thursday  = ["09:00-12:00", "14:00-17:00"]
+friday    = ["09:00-12:00"]
+saturday  = []
+sunday    = []
