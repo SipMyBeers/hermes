@@ -37,29 +37,48 @@ def _resolve_model(explicit: Path | None) -> Path:
     return _MODEL_CANDIDATES[0]
 
 
+_FMT_FLAG = {"txt": "-otxt", "srt": "-osrt", "vtt": "-ovtt"}
+_FMT_EXT = {"txt": ".txt", "srt": ".srt", "vtt": ".vtt"}
+
+
 def transcribe_voice(
     audio_path: Path,
     model_path: Path | None = None,
     language: str = "en",
     timeout: int = 600,
+    output_format: str = "txt",
+    translate_to_english: bool = False,
 ) -> str:
-    """Run whisper-cli over the audio file, return plain transcript text."""
+    """Run whisper-cli over the audio file, return transcript text.
+
+    output_format: 'txt' (plain), 'srt' (with timecodes), or 'vtt'.
+    translate_to_english: when True, whisper-cli auto-detects the source
+        language and translates the output to English (`--translate`).
+    """
     audio_path = Path(audio_path)
     if not audio_path.exists():
         raise FileNotFoundError(f"audio file not found: {audio_path}")
+    if output_format not in _FMT_FLAG:
+        raise ValueError(f"output_format must be one of {sorted(_FMT_FLAG)}")
     model = _resolve_model(model_path)
     if not model.exists():
         raise FileNotFoundError(f"whisper model not found: {model}")
 
-    # whisper-cli writes <prefix>.txt when called with -otxt -of <prefix>.
+    # whisper-cli writes <prefix>.<ext> when called with the matching flag.
     out_prefix = audio_path.with_suffix("")
-    txt_out = out_prefix.with_suffix(".txt")
+    fmt_flag = _FMT_FLAG[output_format]
+    fmt_ext = _FMT_EXT[output_format]
+    out_path = out_prefix.with_suffix(fmt_ext)
     cmd = [
         "whisper-cli",
         "-m", str(model),
         "-l", language,
-        "-otxt",
+        fmt_flag,
         "-of", str(out_prefix),
+    ]
+    if translate_to_english:
+        cmd.append("--translate")
+    cmd += [
         "-ng",            # No GPU. Apple's launchd user-domain agents cannot
                           # reliably initialize Metal — process spins waiting
                           # for shader compilation. base.en CPU is fast enough
@@ -87,7 +106,7 @@ def transcribe_voice(
         except OSError:
             tail = "(log unreadable)"
         raise RuntimeError(f"whisper-cli failed (rc={result.returncode}): {tail}")
-    if txt_out.exists():
-        return txt_out.read_text().strip()
-    # Fallback: parse the stdout transcript if -otxt didn't write a file.
-    return result.stdout.strip()
+    if out_path.exists():
+        return out_path.read_text().strip()
+    # Fallback: parse the stdout transcript if no output file was written.
+    return (result.stdout or "").strip() if isinstance(result.stdout, str) else ""
