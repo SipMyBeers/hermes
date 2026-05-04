@@ -75,14 +75,24 @@ def ingest(
             else:
                 error = "no readable content extracted"
         else:
-            from hermes.ingest.video import extract_video
+            from hermes.ingest.video import extract_video, cleanup_workdir
             doc = extract_video(
                 url,
                 cookies_path=cookies_path,
                 cookies_from_browser=cookies_from_browser,
             )
             title, text = doc.title, doc.text
-            summary_obj = summarize(title=title, text=text)
+            try:
+                summary_obj = summarize(
+                    title=title,
+                    text=text,
+                    images=list(doc.keyframes),
+                    ocr_snippets=list(doc.ocr_snippets),
+                )
+            finally:
+                # Drop the keyframe temp dir now that summarize() has read the
+                # frame bytes. Safe no-op for web docs / videos with no frames.
+                cleanup_workdir(doc)
     except NotImplementedError as e:
         error = f"video ingestion deferred to v1.3: {e}"
     except Exception as e:

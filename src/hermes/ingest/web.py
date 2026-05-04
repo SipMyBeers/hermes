@@ -1,6 +1,7 @@
 """Web URL extraction via trafilatura (lightweight, no JS rendering)."""
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 import httpx
 
 
@@ -9,6 +10,14 @@ class ExtractedDoc:
     title: str
     text: str
     url: str
+    # Vision-pipeline sidecar fields. Empty for web extraction; populated by
+    # the video extractor with sampled keyframes and per-frame OCR text.
+    keyframes: tuple[Path, ...] = field(default_factory=tuple)
+    ocr_snippets: tuple[str, ...] = field(default_factory=tuple)
+    # When set, the orchestrator should `shutil.rmtree(workdir)` after the
+    # downstream summarize() call has finished reading any keyframe bytes.
+    # None for web extraction.
+    workdir: Path | None = None
 
 
 def extract_web(url: str, timeout: float = 30.0) -> ExtractedDoc:
