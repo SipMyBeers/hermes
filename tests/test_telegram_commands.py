@@ -130,7 +130,7 @@ def test_bare_url_triggers_read(tmp_path):
     db = connect(tmp_path / "t.sqlite"); migrate(db)
     tg = MagicMock()
     captured = {}
-    def fake_ingest(url, db, source_chat_id=None):
+    def fake_ingest(url, db, source_chat_id=None, cookies_path="", cookies_from_browser=()):
         captured["url"] = url
         from hermes.ingest.url import Digestion
         return Digestion(id=1, url=url, kind="web", title="T", summary="S",

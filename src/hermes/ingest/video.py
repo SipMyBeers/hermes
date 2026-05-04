@@ -16,29 +16,56 @@ from hermes.ingest.web import ExtractedDoc
 from hermes.voice.transcribe import transcribe_voice
 
 
-def extract_video(url: str, timeout: int = 900) -> ExtractedDoc:
+def extract_video(
+    url: str,
+    timeout: int = 900,
+    cookies_path: str = "",
+    cookies_from_browser: tuple[str, ...] = (),
+) -> ExtractedDoc:
     """Download audio via yt-dlp, transcribe via whisper-cli.
 
     Returns ExtractedDoc(title=video_title, text=transcript, url=url).
     Raises RuntimeError if yt-dlp can't fetch (auth, geoblock, deletion).
+
+    Auth (Instagram, members-only YT, etc.):
+    - cookies_path: path to a Netscape cookies.txt file → yt-dlp gets --cookies <path>.
+    - cookies_from_browser: tuple of browser names tried IN ORDER. First success wins.
+      Examples: ('firefox',), ('safari',), ('firefox','chrome').
+    Both empty → no auth (works for public YT, TikTok, Twitter).
     """
     with tempfile.TemporaryDirectory(prefix="hermes-video-") as tmp:
         tmp_path = Path(tmp)
         out_tpl = str(tmp_path / "%(id)s.%(ext)s")
-        cmd = [
+        base_cmd = [
             "yt-dlp",
             "-x", "--audio-format", "wav",   # extract audio as WAV for whisper.cpp
             "--no-playlist",
             "--no-warnings",
             "--print-json",                  # one-line JSON metadata at end
             "-o", out_tpl,
-            url,
         ]
-        logger.debug("yt-dlp: {}", " ".join(cmd))
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-        if result.returncode != 0:
+
+        # Build the list of attempts. Each tuple is (auth_args, label).
+        attempts: list[tuple[list[str], str]] = []
+        if cookies_path:
+            attempts.append((["--cookies", cookies_path], f"cookies file {cookies_path}"))
+        for browser in cookies_from_browser:
+            attempts.append((["--cookies-from-browser", browser], f"browser {browser}"))
+        if not attempts:
+            attempts.append(([], "no auth"))
+
+        last_err = ""
+        for auth_args, label in attempts:
+            cmd = base_cmd + auth_args + [url]
+            logger.debug("yt-dlp ({}): {}", label, " ".join(cmd))
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            if result.returncode == 0:
+                break
+            last_err = result.stderr.strip()[:500]
+            logger.debug("yt-dlp attempt with {} failed: {}", label, last_err)
+        else:
             raise RuntimeError(
-                f"yt-dlp failed (rc={result.returncode}): {result.stderr.strip()[:500]}"
+                f"yt-dlp failed after {len(attempts)} attempt(s): {last_err}"
             )
         # Parse the last valid JSON line for metadata (yt-dlp prints multiple lines).
         info: dict = {}

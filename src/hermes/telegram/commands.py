@@ -200,7 +200,13 @@ def _cmd_read(args, cfg, db, tg):
 def _ingest_and_reply(url: str, cfg, db, tg) -> None:
     """Shared ingest path used by /read and the bare-URL detector."""
     tg.send_message(f"📥 Reading {url} …")
-    d = ingest(url, db, source_chat_id=cfg.telegram.chat_id)
+    d = ingest(
+        url,
+        db,
+        source_chat_id=cfg.telegram.chat_id,
+        cookies_path=cfg.ingest.cookies_path,
+        cookies_from_browser=cfg.ingest.cookies_from_browser,
+    )
     if d.error:
         tg.send_message(f"⚠ Couldn't ingest #{d.id}\n{url}\n{d.error}")
         return

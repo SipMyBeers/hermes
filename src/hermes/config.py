@@ -59,12 +59,31 @@ class MailConfig:
 
 
 @dataclass(frozen=True)
+class IngestConfig:
+    """URL ingestion (yt-dlp) auth config. Both fields optional; pick the one
+    that works for your setup.
+
+    cookies_path: absolute path to a Netscape-format cookies.txt file. Use
+    when you've exported cookies from a browser via an extension. Persists
+    across browser restarts; survives logouts.
+
+    cookies_from_browser: tuple of browser names yt-dlp tries IN ORDER. First
+    one that produces an authenticated request wins. Common values: 'firefox',
+    'chrome', 'safari', 'edge'. Note: macOS Chrome locks its cookie database
+    while running — Firefox and Safari are friendlier to live extraction.
+    """
+    cookies_path: str = ""
+    cookies_from_browser: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class Config:
     gmail: GmailConfig
     telegram: TelegramConfig
     digest_evening_report: bool
     clients: Mapping[str, ClientConfig] = field(default_factory=lambda: MappingProxyType({}))
     mail: MailConfig = field(default_factory=MailConfig)
+    ingest: IngestConfig = field(default_factory=IngestConfig)
 
 
 def _require_bool(value, *, key: str, source: str) -> bool:
@@ -151,6 +170,17 @@ def load_config(
     except (TypeError, AttributeError) as e:
         raise ConfigError(f"{secrets_path}: malformed [mail] section - {e}") from e
 
+    try:
+        ingest_section = s.get("ingest", {})
+        ingest_cfg = IngestConfig(
+            cookies_path=str(ingest_section.get("cookies_path", "")),
+            cookies_from_browser=tuple(
+                str(b) for b in ingest_section.get("cookies_from_browser", [])
+            ),
+        )
+    except (TypeError, AttributeError) as e:
+        raise ConfigError(f"{secrets_path}: malformed [ingest] section - {e}") from e
+
     clients: dict[str, ClientConfig] = {}
     for key, body in c.items():
         try:
@@ -203,4 +233,5 @@ def load_config(
         digest_evening_report=digest_evening,
         clients=MappingProxyType(clients),
         mail=mail_cfg,
+        ingest=ingest_cfg,
     )

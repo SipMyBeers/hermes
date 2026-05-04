@@ -51,11 +51,16 @@ def ingest(
     url: str,
     db: sqlite3.Connection,
     source_chat_id: int | None = None,
+    cookies_path: str = "",
+    cookies_from_browser: tuple[str, ...] = (),
 ) -> Digestion:
     """Fetch, extract, summarize, persist. Returns the Digestion row.
 
     On extraction failure: still inserts a row with error populated and
-    returns it so the caller can ack the user with a useful message."""
+    returns it so the caller can ack the user with a useful message.
+
+    cookies_path / cookies_from_browser: forwarded to extract_video for
+    Instagram, members-only YouTube, etc. Web extraction ignores them."""
     kind = classify_url(url)
     error = ""
     title = ""
@@ -71,7 +76,11 @@ def ingest(
                 error = "no readable content extracted"
         else:
             from hermes.ingest.video import extract_video
-            doc = extract_video(url)  # raises NotImplementedError in v1.2
+            doc = extract_video(
+                url,
+                cookies_path=cookies_path,
+                cookies_from_browser=cookies_from_browser,
+            )
             title, text = doc.title, doc.text
             summary_obj = summarize(title=title, text=text)
     except NotImplementedError as e:
