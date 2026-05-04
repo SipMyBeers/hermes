@@ -59,19 +59,25 @@ def transcribe_voice(
         str(audio_path),
     ]
     logger.debug("whisper-cli: {}", " ".join(cmd))
-    # whisper-cli streams a lot of progress output to stderr. Python's default
-    # subprocess pipe buffer is 64KB — fill that and the child deadlocks
-    # waiting for the parent to drain. We don't need stderr (we read the .txt
-    # output file separately), so redirect both streams to DEVNULL. If you ever
-    # need to debug, drop the redirect and watch with `log stream`.
-    result = subprocess.run(
-        cmd,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        timeout=timeout,
-    )
+    # Route whisper-cli's progress output to a logfile next to the audio so we
+    # can debug post-mortem. Closing stdin is critical when running under
+    # launchd — without it whisper-cli's TTY-detection has been observed to
+    # hang at 0% CPU before ever reaching model load.
+    log_path = out_prefix.with_suffix(".whisper.log")
+    with open(log_path, "wb") as log_fp:
+        result = subprocess.run(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=log_fp,
+            stderr=subprocess.STDOUT,
+            timeout=timeout,
+        )
     if result.returncode != 0:
-        raise RuntimeError(f"whisper-cli failed (rc={result.returncode})")
+        try:
+            tail = log_path.read_text(errors="replace")[-400:]
+        except OSError:
+            tail = "(log unreadable)"
+        raise RuntimeError(f"whisper-cli failed (rc={result.returncode}): {tail}")
     if txt_out.exists():
         return txt_out.read_text().strip()
     # Fallback: parse the stdout transcript if -otxt didn't write a file.
