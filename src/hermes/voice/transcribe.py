@@ -56,6 +56,11 @@ def transcribe_voice(
         "-l", language,
         "-otxt",
         "-of", str(out_prefix),
+        "-ng",            # No GPU. Apple's launchd user-domain agents cannot
+                          # reliably initialize Metal — process spins waiting
+                          # for shader compilation. base.en CPU is fast enough
+                          # for our use case (~10-15s for a 30s clip on M4).
+        "-t", "8",        # CPU thread count; ghengis has 4P+6E cores.
         str(audio_path),
     ]
     logger.debug("whisper-cli: {}", " ".join(cmd))

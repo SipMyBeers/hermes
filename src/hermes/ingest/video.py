@@ -33,8 +33,16 @@ def extract_video(
       Examples: ('firefox',), ('safari',), ('firefox','chrome').
     Both empty → no auth (works for public YT, TikTok, Twitter).
     """
-    with tempfile.TemporaryDirectory(prefix="hermes-video-") as tmp:
-        tmp_path = Path(tmp)
+    # Persist the work dir under ~/.hermes/work/ so whisper logs survive a
+    # failure (the previous tempfile.TemporaryDirectory wiped the .whisper.log
+    # before we could read it). Successful runs are cleaned up below; failed
+    # runs leave the dir behind for post-mortem.
+    import shutil
+    work_root = Path.home() / ".hermes" / "work"
+    work_root.mkdir(parents=True, exist_ok=True)
+    tmp_path = Path(tempfile.mkdtemp(prefix="hermes-video-", dir=work_root))
+    keep_workdir = False
+    try:
         out_tpl = str(tmp_path / "%(id)s.%(ext)s")
         base_cmd = [
             "yt-dlp",
@@ -77,6 +85,16 @@ def extract_video(
         title = str(info.get("title") or info.get("fulltitle") or "")
         wavs = list(tmp_path.glob("*.wav"))
         if not wavs:
+            keep_workdir = True
             raise RuntimeError(f"yt-dlp produced no .wav file in {tmp_path}")
-        transcript = transcribe_voice(wavs[0])
+        try:
+            transcript = transcribe_voice(wavs[0])
+        except Exception:
+            keep_workdir = True
+            raise
         return ExtractedDoc(title=title, text=transcript, url=url)
+    finally:
+        if not keep_workdir:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+        else:
+            logger.warning("kept work dir for post-mortem: {}", tmp_path)
