@@ -12,10 +12,14 @@ import subprocess
 from pathlib import Path
 from loguru import logger
 
-# Pre-installed model paths on ghengis (saved by aurajam project earlier).
+# Model search order. ~/.hermes/whisper/ is preferred because macOS TCC
+# blocks launchd-spawned processes from reading ~/Documents (where the
+# aurajam project originally cached the models). whisper-cli would silently
+# hang at "loading model from <path>" before producing any further output.
 _MODEL_CANDIDATES = [
-    Path.home() / "Documents" / "GitHub" / "aurajam" / "models" / "ggml-base.en.bin",
     Path.home() / ".hermes" / "whisper" / "ggml-base.en.bin",
+    Path.home() / ".hermes" / "whisper" / "ggml-tiny.en.bin",
+    Path.home() / "Documents" / "GitHub" / "aurajam" / "models" / "ggml-base.en.bin",
     Path.home() / "Documents" / "GitHub" / "aurajam" / "models" / "ggml-tiny.en.bin",
 ]
 
