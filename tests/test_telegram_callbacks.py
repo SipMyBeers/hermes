@@ -250,6 +250,56 @@ def test_decorate_does_not_double_prefix(tmp_path):
     assert edit_text.count("✓") == 1
 
 
+def test_callback_dismiss_records_email_sender(tmp_path):
+    """Phase L stage 2: tapping 🚫 Dismiss on an email-source action records
+    the sender so the next mail from them auto-classifies as promo."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    from hermes.actions.store import add_actions
+    aid = add_actions(
+        db, source_kind="email", source_id=42,
+        texts=["Reply to Casey"],
+        source_sender="Casey <casey@x.com>",
+    )[0]
+    tg = MagicMock()
+    handle_callback(_cb(f"dismiss:{aid}"), _cfg(), db, tg)
+    row = db.execute(
+        "SELECT sender_email, dismissed_count FROM learned_promos"
+    ).fetchone()
+    assert row is not None
+    assert row[0] == "casey@x.com"
+    assert row[1] == 1
+
+
+def test_callback_dismiss_skips_non_email_sources(tmp_path):
+    """Dismissing a digestion- or manual-source action doesn't pollute the
+    learned_promos table — it only learns from email senders."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    from hermes.actions.store import add_actions
+    aid = add_actions(
+        db, source_kind="digestion", source_id=7,
+        texts=["Skim summary"],
+        source_sender="https://example.com",
+    )[0]
+    tg = MagicMock()
+    handle_callback(_cb(f"dismiss:{aid}"), _cfg(), db, tg)
+    rows = db.execute("SELECT COUNT(*) FROM learned_promos").fetchone()
+    assert rows[0] == 0
+
+
+def test_callback_dismiss_skips_email_with_no_sender(tmp_path):
+    """Email source but no source_sender persisted — no row should be added."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    from hermes.actions.store import add_actions
+    aid = add_actions(
+        db, source_kind="email", source_id=42,
+        texts=["Reply"], source_sender=None,
+    )[0]
+    tg = MagicMock()
+    handle_callback(_cb(f"dismiss:{aid}"), _cfg(), db, tg)
+    rows = db.execute("SELECT COUNT(*) FROM learned_promos").fetchone()
+    assert rows[0] == 0
+
+
 def test_callback_draft_invokes_draft_handler(tmp_path):
     """Tapping a Draft button on a lead/urgent card routes through
     _cmd_draft with the message uid as args. Verify by seeding a message

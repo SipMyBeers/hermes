@@ -452,8 +452,28 @@ def handle_callback(
                           remove_keyboard=True)
         elif verb == "dismiss" and len(parts) >= 2:
             aid = int(parts[1])
+            # Snapshot the action's source BEFORE we close the row so we
+            # can teach the rule classifier when the source is an email.
+            src = db.execute(
+                "SELECT source_kind, source_id, source_sender FROM actions "
+                "WHERE id=?",
+                (aid,),
+            ).fetchone()
             ok = dismiss(db, aid)
             tg.answer_callback_query(callback_id, "dismissed" if ok else "already closed")
+            # Phase L stage 2: feed the dismiss into learned_promos so the
+            # next mail from this sender auto-classifies as promo. Wrapped
+            # broadly — a learn-loop failure must never block the dismiss
+            # decoration the user is waiting on.
+            if ok and src and src[0] == "email" and src[2]:
+                try:
+                    from hermes.classifier.learned import record_dismiss
+                    count = record_dismiss(db, src[2])
+                    logger.info(
+                        "learned promo: {} now at {} dismisses", src[2], count
+                    )
+                except Exception as e:
+                    logger.warning("learned-promo record failed: {}", e)
             if msg_id and ok:
                 _decorate(tg, msg, prefix="🚫 ", suffix="\n\n_dismissed_",
                           remove_keyboard=True)
