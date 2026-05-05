@@ -140,7 +140,7 @@ def test_digest_handles_empty_brief_gracefully(tmp_path):
     empty = EmailBrief(summary="", actions=(), tools=(), importance="normal")
     text = build_morning_digest(db, _cfg(), enrich_one=lambda raw: empty)
     assert "Quick question" not in text
-    assert "all filtered as routine" in text
+    assert "all routine" in text
 
 
 def test_digest_handles_missing_raw_email(tmp_path):
@@ -164,7 +164,7 @@ def test_digest_handles_missing_raw_email(tmp_path):
     assert sentinel_called_with == [None]
     # Suppressed: no subject line, but the count message acknowledges it.
     assert "Pre-migration mail" not in text
-    assert "all filtered as routine" in text
+    assert "all routine" in text
 
 
 def test_digest_excludes_bootstrap_sentinel_row(tmp_path):
@@ -252,7 +252,7 @@ def test_digest_filters_noise_importance(tmp_path):
     )
     text = build_morning_digest(db, _cfg(), enrich_one=lambda raw: noise_brief)
     assert "New on Tubi" not in text
-    assert "all filtered as routine" in text
+    assert "all routine" in text
 
 
 def test_digest_filters_empty_summary(tmp_path):
@@ -328,6 +328,72 @@ def test_digest_shows_filtered_count_when_anything_suppressed(tmp_path):
     text = build_morning_digest(db, _cfg(), enrich_one=by_raw)
     assert "1 to review" in text
     assert "noise filtered" in text
+
+
+def test_digest_truncation_count_separates_noise_from_unprocessed(tmp_path):
+    """17 interesting rows (>15 cap) + 3 of the first 15 returned as noise.
+    The header must show '12 to review · 3 noise filtered · 2 not yet
+    processed' — three distinct buckets, never collapsed."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    now = datetime.now(timezone.utc).isoformat()
+    rows = [
+        (700 + i, f"m-{700+i}", now, f"s{i}@x.com", f"Subject {i}",
+         "client", "rule", f"raw-{i}".encode())
+        for i in range(17)
+    ]
+    db.executemany(
+        "INSERT INTO messages(uid, message_id, received_at, sender, subject, "
+        "classification, classifier, raw_email) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        rows,
+    )
+
+    # The most recent 15 rows are i=2..16 (DESC by received_at, then UID
+    # tiebreak picks higher first). Mark 3 of those 15 as noise.
+    noise_raws = {b"raw-16", b"raw-15", b"raw-14"}
+
+    def by_raw(raw: bytes | None):
+        if raw in noise_raws:
+            return EmailBrief(summary="x", actions=(), tools=(),
+                              importance="noise")
+        return EmailBrief(summary="content", actions=(), tools=(),
+                          importance="normal")
+
+    text = build_morning_digest(db, _cfg(), enrich_one=by_raw)
+    # 15 enriched - 3 noise = 12 to review.
+    # 17 total - 15 cap = 2 not-yet-processed.
+    assert "12 to review" in text
+    assert "3 noise filtered" in text
+    assert "2 not yet processed" in text
+    # Old "...truncated" footer must be gone — the suffix already reports it.
+    assert "truncated" not in text
+
+
+def test_digest_truncation_only_when_overflow(tmp_path):
+    """Exactly 15 rows: no truncation note, no 'not yet processed' suffix."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    now = datetime.now(timezone.utc).isoformat()
+    rows = [
+        (800 + i, f"m-{800+i}", now, f"s{i}@x.com", f"Subject {i}",
+         "client", "rule", f"r-{i}".encode())
+        for i in range(15)
+    ]
+    db.executemany(
+        "INSERT INTO messages(uid, message_id, received_at, sender, subject, "
+        "classification, classifier, raw_email) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        rows,
+    )
+    text = build_morning_digest(
+        db, _cfg(),
+        enrich_one=lambda raw: EmailBrief(
+            summary="x", actions=(), tools=(), importance="normal"
+        ),
+    )
+    assert "15 to review" in text
+    assert "not yet processed" not in text
+    assert "noise filtered" not in text
+    assert "truncated" not in text
 
 
 def test_digest_includes_open_actions_summary(tmp_path):

@@ -173,6 +173,13 @@ def build_morning_digest(
         # Rows the LLM marked as noise (or that returned an empty summary)
         # are suppressed from the per-email block — they've already been
         # counted in the daily totals above and don't need to pollute review.
+        #
+        # Bookkeeping has three buckets:
+        #   - enriched: rows the LLM gave us a usable summary for
+        #   - suppressed: enriched rows we explicitly filtered (noise / blank)
+        #   - extra: rows beyond _MAX_INTERESTING that we never enriched
+        # The header has to keep these three separate or the math gets weird
+        # ("17 to review · 5 noise filtered" when there are only 12 to review).
         enriched: list[tuple[int, str, str, EmailBrief]] = []
         suppressed = 0
         for uid, sender, subject, raw in interesting[:_MAX_INTERESTING]:
@@ -185,9 +192,15 @@ def build_morning_digest(
                 continue
             enriched.append((uid, sender, subject, brief))
         enriched.sort(key=lambda row: _importance_rank(row[3]))
+        extra = max(0, len(interesting) - _MAX_INTERESTING)
 
         if enriched:
-            suffix = f" · {suppressed} noise filtered" if suppressed else ""
+            suffix_parts: list[str] = []
+            if suppressed:
+                suffix_parts.append(f"{suppressed} noise filtered")
+            if extra:
+                suffix_parts.append(f"{extra} not yet processed")
+            suffix = " · " + " · ".join(suffix_parts) if suffix_parts else ""
             lines.append("")
             lines.append(f"*Overnight ({len(enriched)} to review{suffix})*")
             for uid, sender, subject, brief in enriched:
@@ -218,15 +231,13 @@ def build_morning_digest(
                                 lines.append(f"    – *{t.name}* — {t.description}")
                             else:
                                 lines.append(f"    – *{t.name}*")
-            if len(interesting) > _MAX_INTERESTING:
-                lines.append("")
-                lines.append(
-                    f"  …and {len(interesting) - _MAX_INTERESTING} more (truncated)."
-                )
-        elif suppressed:
+            # The truncation count is already encoded in suffix above —
+            # don't repeat it as a footer.
+        elif suppressed or extra:
+            total_filtered = suppressed + extra
             lines.append("")
             lines.append(
-                f"*Overnight* — {suppressed} messages, all filtered as routine."
+                f"*Overnight* — {total_filtered} messages, all routine."
             )
 
     if pending_rows:
