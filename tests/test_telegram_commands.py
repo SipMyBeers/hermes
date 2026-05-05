@@ -52,6 +52,26 @@ def test_approve_marks_outbox_sent(tmp_path):
     handle_update(update, _cfg(), db, tg)
     row = db.execute("SELECT status FROM outbox WHERE id=1").fetchone()
     assert row[0] == "sent"
+    # Slash-command path => silent=False default => user gets text confirm.
+    confirms = [c for c in tg.send_message.call_args_list
+                if "Sent #1" in c.args[0]]
+    assert len(confirms) == 1
+
+
+def test_reject_slash_command_posts_text_confirmation(tmp_path):
+    """The slash-command /reject path keeps the chat-level 'Rejected #N'
+    confirmation — only the callback path goes silent."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    db.execute(
+        "INSERT INTO outbox (kind, to_addr, subject, body, status, created_at) "
+        "VALUES ('reply', 'a@b.com', 's', 'b', 'queued', '2026-05-02')"
+    )
+    tg = MagicMock()
+    update = {"update_id": 6, "message": {"chat": {"id": 42}, "text": "/reject 1"}}
+    handle_update(update, _cfg(), db, tg)
+    confirms = [c for c in tg.send_message.call_args_list
+                if "Rejected #1" in c.args[0]]
+    assert len(confirms) == 1
 
 
 def test_other_chat_id_ignored(tmp_path):

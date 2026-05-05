@@ -172,6 +172,39 @@ def test_callback_reject_invokes_reject_handler(tmp_path):
     assert row[0] == 0  # /reject deletes
 
 
+def test_callback_approve_does_not_post_extra_confirmation(tmp_path):
+    """The card decoration ('✉️ ... _sent_') is the user-visible signal.
+    Posting a fresh 'Sent #N to ...' chat message duplicates that —
+    ensure the callback path stays silent on chat-level confirmations."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    db.execute(
+        "INSERT INTO outbox (kind, to_addr, subject, body, status, created_at) "
+        "VALUES ('reply', 'a@b.com', 's', 'b', 'queued', '2026-05-02')"
+    )
+    tg = MagicMock()
+    import hermes.telegram.commands as cmd
+    cmd._do_send = MagicMock(return_value=True)
+    handle_callback(_cb("approve:1", text="Invoice ready"), _cfg(), db, tg)
+    # No fresh send_message at all — the only Telegram-side write is the
+    # edit on the original card via edit_message_text.
+    tg.send_message.assert_not_called()
+    tg.edit_message_text.assert_called_once()
+
+
+def test_callback_reject_does_not_post_extra_confirmation(tmp_path):
+    """Same contract for the discard path: the '🗑️ ... _discarded_'
+    edit is enough. No 'Rejected #N' chat message follows."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    db.execute(
+        "INSERT INTO outbox (kind, to_addr, subject, body, status, created_at) "
+        "VALUES ('reply', 'a@b.com', 's', 'b', 'queued', '2026-05-02')"
+    )
+    tg = MagicMock()
+    handle_callback(_cb("reject:1", text="Invoice ready"), _cfg(), db, tg)
+    tg.send_message.assert_not_called()
+    tg.edit_message_text.assert_called_once()
+
+
 def test_callback_actions_runs_actions_command(tmp_path):
     db = connect(tmp_path / "t.sqlite"); migrate(db)
     tg = MagicMock()

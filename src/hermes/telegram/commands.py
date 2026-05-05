@@ -147,7 +147,13 @@ def _cmd_digest(args, cfg, db, tg):
     tg.send_message(text)
 
 
-def _cmd_approve(args, cfg, db, tg):
+def _cmd_approve(args, cfg, db, tg, *, silent: bool = False):
+    """Send a queued outbox row over SMTP and update its status.
+
+    silent=True suppresses the chat-level confirmation message — the
+    callback router uses this because the original card already gets
+    decorated to '✉️ ... _sent_' via _decorate(), and posting a
+    second confirmation duplicates the signal."""
     if not args:
         tg.send_message("Usage: /approve <outbox_id>")
         return
@@ -172,13 +178,19 @@ def _cmd_approve(args, cfg, db, tg):
             "UPDATE outbox SET status='sent', sent_at=? WHERE id=?",
             (datetime.now(timezone.utc).isoformat(), oid),
         )
-        tg.send_message(f"Sent #{oid} to {to_addr}")
+        if not silent:
+            tg.send_message(f"Sent #{oid} to {to_addr}")
     else:
         db.execute("UPDATE outbox SET status='failed', last_error='send error' WHERE id=?", (oid,))
-        tg.send_message(f"Failed to send #{oid} — see logs")
+        if not silent:
+            tg.send_message(f"Failed to send #{oid} — see logs")
 
 
-def _cmd_reject(args, cfg, db, tg):
+def _cmd_reject(args, cfg, db, tg, *, silent: bool = False):
+    """Discard a queued outbox row.
+
+    silent=True (callback path) skips the text confirmation; the card
+    decoration to '🗑️ ... _discarded_' carries the signal already."""
     if not args:
         tg.send_message("Usage: /reject <outbox_id>")
         return
@@ -188,7 +200,10 @@ def _cmd_reject(args, cfg, db, tg):
         tg.send_message("Outbox id must be an integer")
         return
     res = db.execute("DELETE FROM outbox WHERE id=? AND status='queued'", (oid,))
-    tg.send_message(f"Rejected #{oid}" if res.rowcount else f"Nothing to reject for id={oid}")
+    if not silent:
+        tg.send_message(
+            f"Rejected #{oid}" if res.rowcount else f"Nothing to reject for id={oid}"
+        )
 
 
 def _cmd_save(args, cfg, db, tg):
@@ -381,14 +396,16 @@ def handle_callback(
                 )
         elif verb == "approve" and len(parts) >= 2:
             oid = int(parts[1])
-            _cmd_approve([str(oid)], cfg, db, tg)
+            # silent=True: the card decoration below is the only confirmation
+            # the user needs — a second chat message duplicates the signal.
+            _cmd_approve([str(oid)], cfg, db, tg, silent=True)
             tg.answer_callback_query(callback_id, "sending")
             if msg_id:
                 _decorate(tg, msg, prefix="✉️ ", suffix="\n\n_sent_",
                           remove_keyboard=True)
         elif verb == "reject" and len(parts) >= 2:
             oid = int(parts[1])
-            _cmd_reject([str(oid)], cfg, db, tg)
+            _cmd_reject([str(oid)], cfg, db, tg, silent=True)
             tg.answer_callback_query(callback_id, "discarded")
             if msg_id:
                 _decorate(tg, msg, prefix="🗑️ ", suffix="\n\n_discarded_",
