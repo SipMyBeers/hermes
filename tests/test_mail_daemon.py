@@ -2,12 +2,30 @@ from dataclasses import replace
 from email import message_from_bytes
 from pathlib import Path
 from unittest.mock import MagicMock
+import pytest
 from hermes.config import Config, GmailConfig, TelegramConfig, ClientConfig, MailConfig
 from hermes.classifier.rules import RuleResult, ClientHint
 from hermes.classifier.llm import LLMResult
+from hermes.digest.enrich import EmailBrief
 from hermes.mail.daemon import process_message, classify_message, LLM_THRESHOLD
 
 FIXTURES = Path(__file__).parent / "fixtures" / "mbox"
+
+
+@pytest.fixture(autouse=True)
+def _no_real_ollama(monkeypatch):
+    """Default: every test in this module gets a fast empty enricher.
+
+    Without this, any client/review/personal/other message routes through
+    `summarize_for_brief`, which falls through to httpx → localhost:11434
+    (Ollama) and eats ~5s per test waiting on connection failures. Tests
+    that need a specific brief shape override via their own monkeypatch.
+    """
+    empty = EmailBrief(summary="", actions=(), tools=(), importance="normal")
+    monkeypatch.setattr(
+        "hermes.mail.daemon.summarize_for_brief",
+        lambda msg, user=None, **kwargs: empty,
+    )
 
 
 def _cfg() -> Config:
@@ -180,7 +198,7 @@ def test_classify_message_llm_io_failure_marks_classifier_rule():
     assert "llm unavailable" in result.reason
 
 
-def test_lead_detection_persists_and_pings(tmp_path):
+def test_lead_detection_persists_and_pings(tmp_path, monkeypatch):
     """An unknown-sender business inquiry is recorded as a lead and pinged."""
     from hermes.db import connect, migrate
     db = connect(tmp_path / "t.sqlite")
@@ -196,9 +214,8 @@ def test_lead_detection_persists_and_pings(tmp_path):
     )
     msg = message_from_bytes(raw)
     fake_imap = MagicMock()
-    import hermes.mail.daemon as dmod
     fake_tg = MagicMock()
-    dmod._telegram = lambda cfg: fake_tg
+    monkeypatch.setattr("hermes.mail.daemon._telegram", lambda cfg: fake_tg)
     process_message(uid=200, msg=msg, db=db, cfg=_cfg(), imap=fake_imap,
                     llm_classifier=None, drafter=None)
     rows = list(db.execute("SELECT uid, sender_domain, reason FROM leads"))
@@ -211,24 +228,25 @@ def test_lead_detection_persists_and_pings(tmp_path):
     assert "unknown.io" in text
 
 
-def test_process_message_persists_actions_for_client(tmp_path):
+def test_process_message_persists_actions_for_client(tmp_path, monkeypatch):
     """Client emails get enriched and any extracted actions land in the
     actions table tied back to the message uid."""
     from hermes.db import connect, migrate
-    from hermes.digest.enrich import EmailBrief
     db = connect(tmp_path / "t.sqlite")
     migrate(db)
     msg = message_from_bytes((FIXTURES / "client_boarhog.eml").read_bytes())
     fake_imap = MagicMock()
-    import hermes.mail.daemon as dmod
     fake_brief = EmailBrief(
         summary="Sam wants the renewal quote.",
         actions=("Send renewal terms", "Generate invoice"),
         tools=(),
         importance="normal",
     )
-    dmod.summarize_for_brief = lambda *a, **kw: fake_brief
-    dmod._telegram = lambda cfg: MagicMock()
+    monkeypatch.setattr(
+        "hermes.mail.daemon.summarize_for_brief",
+        lambda *a, **kw: fake_brief,
+    )
+    monkeypatch.setattr("hermes.mail.daemon._telegram", lambda cfg: MagicMock())
     process_message(uid=300, msg=msg, db=db, cfg=_cfg(), imap=fake_imap,
                     llm_classifier=None, drafter=None)
     rows = list(db.execute(
@@ -239,7 +257,7 @@ def test_process_message_persists_actions_for_client(tmp_path):
     assert rows[1] == ("email", 300, "Generate invoice", "normal", "open")
 
 
-def test_process_message_skips_action_persist_for_promo(tmp_path):
+def test_process_message_skips_action_persist_for_promo(tmp_path, monkeypatch):
     """Promos must not be enriched — saves an LLM call and avoids polluting
     the action log with junk-mail noise."""
     from hermes.db import connect, migrate
@@ -247,9 +265,11 @@ def test_process_message_skips_action_persist_for_promo(tmp_path):
     migrate(db)
     msg = message_from_bytes((FIXTURES / "promo_amazon.eml").read_bytes())
     fake_imap = MagicMock()
-    import hermes.mail.daemon as dmod
     enrich_calls = []
-    dmod.summarize_for_brief = lambda *a, **kw: enrich_calls.append(a) or None
+    monkeypatch.setattr(
+        "hermes.mail.daemon.summarize_for_brief",
+        lambda *a, **kw: enrich_calls.append(a) or None,
+    )
     process_message(uid=301, msg=msg, db=db, cfg=_cfg(), imap=fake_imap,
                     llm_classifier=None, drafter=None)
     assert enrich_calls == []
@@ -257,24 +277,25 @@ def test_process_message_skips_action_persist_for_promo(tmp_path):
     assert rows[0][0] == 0
 
 
-def test_process_message_urgent_pings_telegram(tmp_path):
+def test_process_message_urgent_pings_telegram(tmp_path, monkeypatch):
     """importance='urgent' triggers an inline 🔴 ping with the summary."""
     from hermes.db import connect, migrate
-    from hermes.digest.enrich import EmailBrief
     db = connect(tmp_path / "t.sqlite")
     migrate(db)
     msg = message_from_bytes((FIXTURES / "client_boarhog.eml").read_bytes())
     fake_imap = MagicMock()
     fake_tg = MagicMock()
-    import hermes.mail.daemon as dmod
     fake_brief = EmailBrief(
         summary="Production is down — rollback now.",
         actions=("Rollback last deploy",),
         tools=(),
         importance="urgent",
     )
-    dmod.summarize_for_brief = lambda *a, **kw: fake_brief
-    dmod._telegram = lambda cfg: fake_tg
+    monkeypatch.setattr(
+        "hermes.mail.daemon.summarize_for_brief",
+        lambda *a, **kw: fake_brief,
+    )
+    monkeypatch.setattr("hermes.mail.daemon._telegram", lambda cfg: fake_tg)
     process_message(uid=302, msg=msg, db=db, cfg=_cfg(), imap=fake_imap,
                     llm_classifier=None, drafter=None)
     # At least one send_message call with the urgent badge.
@@ -286,25 +307,26 @@ def test_process_message_urgent_pings_telegram(tmp_path):
     assert "Production is down" in text
 
 
-def test_urgent_inbox_ping_includes_action_button(tmp_path):
+def test_urgent_inbox_ping_includes_action_button(tmp_path, monkeypatch):
     """When actions were extracted, the urgent ping carries a Done/Snooze/
     Dismiss inline keyboard wired to the first action's id."""
     from hermes.db import connect, migrate
-    from hermes.digest.enrich import EmailBrief
     db = connect(tmp_path / "t.sqlite")
     migrate(db)
     msg = message_from_bytes((FIXTURES / "client_boarhog.eml").read_bytes())
     fake_imap = MagicMock()
     fake_tg = MagicMock()
-    import hermes.mail.daemon as dmod
     fake_brief = EmailBrief(
         summary="Down.",
         actions=("Rollback last deploy",),
         tools=(),
         importance="urgent",
     )
-    dmod.summarize_for_brief = lambda *a, **kw: fake_brief
-    dmod._telegram = lambda cfg: fake_tg
+    monkeypatch.setattr(
+        "hermes.mail.daemon.summarize_for_brief",
+        lambda *a, **kw: fake_brief,
+    )
+    monkeypatch.setattr("hermes.mail.daemon._telegram", lambda cfg: fake_tg)
     process_message(uid=304, msg=msg, db=db, cfg=_cfg(), imap=fake_imap,
                     llm_classifier=None, drafter=None)
     urgent_calls = [c for c in fake_tg.send_message.call_args_list
@@ -320,22 +342,23 @@ def test_urgent_inbox_ping_includes_action_button(tmp_path):
     assert f"dismiss:{aid}" in cbs
 
 
-def test_urgent_inbox_ping_without_actions_has_no_button(tmp_path):
+def test_urgent_inbox_ping_without_actions_has_no_button(tmp_path, monkeypatch):
     """If the LLM returned a summary but zero actions, the urgent ping
     still fires but without a keyboard (no id to bind to)."""
     from hermes.db import connect, migrate
-    from hermes.digest.enrich import EmailBrief
     db = connect(tmp_path / "t.sqlite")
     migrate(db)
     msg = message_from_bytes((FIXTURES / "client_boarhog.eml").read_bytes())
     fake_imap = MagicMock()
     fake_tg = MagicMock()
-    import hermes.mail.daemon as dmod
     fake_brief = EmailBrief(
         summary="Heads up — outage.", actions=(), tools=(), importance="urgent",
     )
-    dmod.summarize_for_brief = lambda *a, **kw: fake_brief
-    dmod._telegram = lambda cfg: fake_tg
+    monkeypatch.setattr(
+        "hermes.mail.daemon.summarize_for_brief",
+        lambda *a, **kw: fake_brief,
+    )
+    monkeypatch.setattr("hermes.mail.daemon._telegram", lambda cfg: fake_tg)
     process_message(uid=305, msg=msg, db=db, cfg=_cfg(), imap=fake_imap,
                     llm_classifier=None, drafter=None)
     urgent_calls = [c for c in fake_tg.send_message.call_args_list
@@ -344,22 +367,23 @@ def test_urgent_inbox_ping_without_actions_has_no_button(tmp_path):
     assert urgent_calls[0].kwargs.get("reply_markup") is None
 
 
-def test_process_message_non_urgent_does_not_ping(tmp_path):
+def test_process_message_non_urgent_does_not_ping(tmp_path, monkeypatch):
     """Non-urgent enrichments stay silent — only the morning brief surfaces them."""
     from hermes.db import connect, migrate
-    from hermes.digest.enrich import EmailBrief
     db = connect(tmp_path / "t.sqlite")
     migrate(db)
     msg = message_from_bytes((FIXTURES / "client_boarhog.eml").read_bytes())
     fake_imap = MagicMock()
     fake_tg = MagicMock()
-    import hermes.mail.daemon as dmod
     fake_brief = EmailBrief(
         summary="Routine check-in.", actions=(), tools=(),
         importance="normal",
     )
-    dmod.summarize_for_brief = lambda *a, **kw: fake_brief
-    dmod._telegram = lambda cfg: fake_tg
+    monkeypatch.setattr(
+        "hermes.mail.daemon.summarize_for_brief",
+        lambda *a, **kw: fake_brief,
+    )
+    monkeypatch.setattr("hermes.mail.daemon._telegram", lambda cfg: fake_tg)
     process_message(uid=303, msg=msg, db=db, cfg=_cfg(), imap=fake_imap,
                     llm_classifier=None, drafter=None)
     # The lead-detect path is the only thing that pings for known-client
@@ -369,16 +393,15 @@ def test_process_message_non_urgent_does_not_ping(tmp_path):
     assert urgent_calls == []
 
 
-def test_known_client_does_not_get_lead_label(tmp_path):
+def test_known_client_does_not_get_lead_label(tmp_path, monkeypatch):
     """A message from a known client domain must not be flagged as a lead."""
     from hermes.db import connect, migrate
     db = connect(tmp_path / "t.sqlite")
     migrate(db)
     msg = message_from_bytes((FIXTURES / "client_boarhog.eml").read_bytes())
     fake_imap = MagicMock()
-    import hermes.mail.daemon as dmod
     fake_tg = MagicMock()
-    dmod._telegram = lambda cfg: fake_tg
+    monkeypatch.setattr("hermes.mail.daemon._telegram", lambda cfg: fake_tg)
     process_message(uid=201, msg=msg, db=db, cfg=_cfg(), imap=fake_imap,
                     llm_classifier=None, drafter=None)
     rows = list(db.execute("SELECT COUNT(*) FROM leads"))
