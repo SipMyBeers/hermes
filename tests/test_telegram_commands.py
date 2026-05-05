@@ -526,3 +526,9 @@ def test_draft_with_no_args_shows_usage(tmp_path):
     update = {"update_id": 307, "message": {"chat": {"id": 42}, "text": "/draft"}}
     handle_update(update, _cfg(), db, tg)
     assert "Usage:" in tg.send_message.call_args.args[0]
+
+
+def test_help_text_lists_draft_command():
+    """HELP_TEXT must surface /draft so power users discover it."""
+    from hermes.telegram.commands import HELP_TEXT
+    assert "/draft" in HELP_TEXT

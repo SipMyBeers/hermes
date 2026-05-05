@@ -24,6 +24,7 @@ If you'd rather type:
 • `/digest` — today's report.
 • `/actions` — open to-dos.
 • `/save <url>` — for the weekly bookmark digest.
+• `/draft <uid>` — draft a reply for a saved email.
 
 Slash-command index for power users:
 `/status` `/approve` `/reject` `/done` `/snooze` `/dismiss` `/retry`
