@@ -6,9 +6,13 @@ from hermes.digest.build import build_morning_digest
 from hermes.digest.enrich import EmailBrief, Tool
 
 
-# Default enricher for tests: never call gemma4. Returns None so the digest
-# falls back to the bare sender/subject line.
+# Default enricher for tests: never call gemma4. Returns None which under
+# the post-J.1 filter suppresses the row from the per-email block. Tests
+# that need the row to actually render should use _ALWAYS_BRIEF instead.
 _NO_ENRICH = lambda raw: None
+_ALWAYS_BRIEF = lambda raw: EmailBrief(
+    summary="(test summary)", actions=(), tools=(), importance="normal"
+)
 
 
 def _cfg():
@@ -61,7 +65,12 @@ def test_digest_lists_pending_outbox(tmp_path):
 
 
 def test_digest_skips_promos_and_transactional_in_per_email_block(tmp_path):
-    """Per-email enriched section excludes promo and transactional."""
+    """Per-email enriched section excludes promo and transactional.
+
+    The classification filter happens before enrichment, so promos and
+    receipts never reach the enricher in the first place. With None briefs
+    suppressed under the new filter, the surviving 'client' row only
+    renders if its enricher returns a real summary."""
     db = connect(tmp_path / "t.sqlite"); migrate(db)
     now = datetime.now(timezone.utc).isoformat()
     rows = [
@@ -74,7 +83,9 @@ def test_digest_skips_promos_and_transactional_in_per_email_block(tmp_path):
         "VALUES (?, ?, ?, ?, ?, ?, ?)",
         rows,
     )
-    text = build_morning_digest(db, _cfg(), enrich_one=_NO_ENRICH)
+    fake_brief = EmailBrief(summary="Real client message.", actions=(), tools=(),
+                             importance="normal")
+    text = build_morning_digest(db, _cfg(), enrich_one=lambda raw: fake_brief)
     assert "Overnight" in text
     assert "Project update" in text
     # promo / transactional must NOT show up in the per-email blocks
@@ -96,6 +107,7 @@ def test_digest_includes_per_email_brief_when_enrichment_returns_data(tmp_path):
         summary="Sam wants a hosting renewal quote for next quarter.",
         actions=("Send renewal terms", "Generate invoice"),
         tools=(Tool(name="Stripe", description="payments platform"),),
+        importance="normal",
     )
 
     def fake_enrich(raw: bytes | None):
@@ -114,7 +126,10 @@ def test_digest_includes_per_email_brief_when_enrichment_returns_data(tmp_path):
 
 
 def test_digest_handles_empty_brief_gracefully(tmp_path):
-    """When enrichment returns an empty EmailBrief (Ollama down), still show sender/subject."""
+    """When enrichment returns an empty EmailBrief (Ollama down or LLM
+    flagged the row as nothing-to-say), the row is suppressed and the
+    Overnight section reports the filtered count instead of leaking
+    sender/subject without context."""
     db = connect(tmp_path / "t.sqlite"); migrate(db)
     now = datetime.now(timezone.utc).isoformat()
     db.execute(
@@ -122,17 +137,16 @@ def test_digest_handles_empty_brief_gracefully(tmp_path):
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (7, "m7", now, "sam@boarhog.example", "Quick question", "client", "rule", b"raw"),
     )
-    empty = EmailBrief(summary="", actions=(), tools=())
+    empty = EmailBrief(summary="", actions=(), tools=(), importance="normal")
     text = build_morning_digest(db, _cfg(), enrich_one=lambda raw: empty)
-    assert "[7]" in text
-    assert "Quick question" in text
-    # No "Actions:" / "Tools mentioned:" headers since the brief is empty.
-    assert "Actions:" not in text
-    assert "Tools mentioned:" not in text
+    assert "Quick question" not in text
+    assert "all filtered as routine" in text
 
 
 def test_digest_handles_missing_raw_email(tmp_path):
-    """Older rows with raw_email=NULL get bare sender/subject lines."""
+    """Older rows with raw_email=NULL get suppressed under the new filter
+    (no brief = no signal to render). The enricher still gets called with
+    None so the default-enricher contract stays correct."""
     db = connect(tmp_path / "t.sqlite"); migrate(db)
     now = datetime.now(timezone.utc).isoformat()
     db.execute(
@@ -140,9 +154,6 @@ def test_digest_handles_missing_raw_email(tmp_path):
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (5, "m5", now, "old@boarhog.example", "Pre-migration mail", "client", "rule", None),
     )
-    # Use the real default enricher path — it must short-circuit on raw=None
-    # without ever calling gemma4. We assert by passing a sentinel that would
-    # fail loudly if invoked with non-None.
     sentinel_called_with = []
 
     def trap(raw):
@@ -151,7 +162,9 @@ def test_digest_handles_missing_raw_email(tmp_path):
 
     text = build_morning_digest(db, _cfg(), enrich_one=trap)
     assert sentinel_called_with == [None]
-    assert "Pre-migration mail" in text
+    # Suppressed: no subject line, but the count message acknowledges it.
+    assert "Pre-migration mail" not in text
+    assert "all filtered as routine" in text
 
 
 def test_digest_excludes_bootstrap_sentinel_row(tmp_path):
@@ -200,7 +213,7 @@ def test_digest_uses_short_sender_in_per_email_block(tmp_path):
         (501, "m-501", now, "CoinTracker <hello@mail.cointracker.io>",
          "Crypto portfolio update", "review", "llm", 0.6),
     )
-    text = build_morning_digest(db, _cfg(), enrich_one=_NO_ENRICH)
+    text = build_morning_digest(db, _cfg(), enrich_one=_ALWAYS_BRIEF)
     assert "CoinTracker" in text
     assert "hello@mail.cointracker.io" not in text
 
@@ -223,6 +236,100 @@ def test_digest_skips_tools_block_when_tool_name_in_subject(tmp_path):
     assert "Tools mentioned" not in text
 
 
+def test_digest_filters_noise_importance(tmp_path):
+    """importance='noise' rows must not appear in the per-email block."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    now = datetime.now(timezone.utc).isoformat()
+    db.execute(
+        "INSERT INTO messages(uid, message_id, received_at, sender, subject, "
+        "classification, classifier, raw_email) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (910, "m-910", now, "promos@tubi.tv", "New on Tubi this week",
+         "other", "rule", b"raw"),
+    )
+    noise_brief = EmailBrief(
+        summary="Generic streaming promo.", actions=(), tools=(), importance="noise"
+    )
+    text = build_morning_digest(db, _cfg(), enrich_one=lambda raw: noise_brief)
+    assert "New on Tubi" not in text
+    assert "all filtered as routine" in text
+
+
+def test_digest_filters_empty_summary(tmp_path):
+    """Empty summary => row gets suppressed even if importance='normal'."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    now = datetime.now(timezone.utc).isoformat()
+    db.execute(
+        "INSERT INTO messages(uid, message_id, received_at, sender, subject, "
+        "classification, classifier, raw_email) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (911, "m-911", now, "noreply@x.com", "Confirmation #4581",
+         "other", "rule", b"raw"),
+    )
+    blank = EmailBrief(summary="", actions=(), tools=(), importance="normal")
+    text = build_morning_digest(db, _cfg(), enrich_one=lambda raw: blank)
+    assert "Confirmation #4581" not in text
+
+
+def test_digest_sorts_urgent_first(tmp_path):
+    """When two rows survive, the urgent one renders first with the 🔴 badge."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    now = datetime.now(timezone.utc).isoformat()
+    rows = [
+        # Insert normal first to prove the sort actually moves urgent above it.
+        (920, "m-920", now, "casual@x.com", "Routine ping", "client", "rule", b"raw-n"),
+        (921, "m-921", now, "boss@x.com", "Site is down", "client", "rule", b"raw-u"),
+    ]
+    db.executemany(
+        "INSERT INTO messages(uid, message_id, received_at, sender, subject, "
+        "classification, classifier, raw_email) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        rows,
+    )
+    def by_raw(raw):
+        if raw == b"raw-u":
+            return EmailBrief(summary="Production is offline.", actions=(),
+                              tools=(), importance="urgent")
+        return EmailBrief(summary="Status update.", actions=(), tools=(),
+                          importance="normal")
+
+    text = build_morning_digest(db, _cfg(), enrich_one=by_raw)
+    urgent_pos = text.find("Site is down")
+    normal_pos = text.find("Routine ping")
+    assert urgent_pos != -1 and normal_pos != -1
+    assert urgent_pos < normal_pos
+    # 🔴 badge appears on the urgent line.
+    urgent_line = [ln for ln in text.splitlines() if "Site is down" in ln][0]
+    assert "🔴" in urgent_line
+    normal_line = [ln for ln in text.splitlines() if "Routine ping" in ln][0]
+    assert "🔴" not in normal_line
+
+
+def test_digest_shows_filtered_count_when_anything_suppressed(tmp_path):
+    """When some rows survive and some get filtered, the header reports both."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    now = datetime.now(timezone.utc).isoformat()
+    rows = [
+        (930, "m-930", now, "real@x.com", "Real email", "client", "rule", b"keep"),
+        (931, "m-931", now, "promo@x.com", "Junk", "other", "rule", b"drop"),
+    ]
+    db.executemany(
+        "INSERT INTO messages(uid, message_id, received_at, sender, subject, "
+        "classification, classifier, raw_email) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        rows,
+    )
+    def by_raw(raw):
+        if raw == b"keep":
+            return EmailBrief(summary="Real content.", actions=(), tools=(),
+                              importance="normal")
+        return EmailBrief(summary="x", actions=(), tools=(), importance="noise")
+
+    text = build_morning_digest(db, _cfg(), enrich_one=by_raw)
+    assert "1 to review" in text
+    assert "noise filtered" in text
+
+
 def test_digest_decodes_encoded_word_subjects(tmp_path):
     """RFC 2047 =?UTF-8?B?...?= subjects must be rendered as plain text."""
     db = connect(tmp_path / "t.sqlite"); migrate(db)
@@ -235,6 +342,6 @@ def test_digest_decodes_encoded_word_subjects(tmp_path):
         (1001, "m-1001", now, "Casey <casey@x.com>", encoded,
          "review", "llm", 0.6),
     )
-    text = build_morning_digest(db, _cfg(), enrich_one=_NO_ENRICH)
+    text = build_morning_digest(db, _cfg(), enrich_one=_ALWAYS_BRIEF)
     assert "Hello World" in text
     assert "=?UTF-8?B?" not in text

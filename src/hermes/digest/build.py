@@ -76,8 +76,9 @@ def _interesting_messages(
     ]
 
 
-def _default_enricher() -> Callable[[bytes | None], EmailBrief | None]:
+def _default_enricher(cfg: Config) -> Callable[[bytes | None], EmailBrief | None]:
     """Real enrichment path: re-parse persisted RFC822 bytes and call gemma4.
+    Threads cfg.user through so the LLM has identity context.
     Returns None when there's no raw_email to work with."""
     from hermes.digest.enrich import summarize_for_brief
 
@@ -88,9 +89,17 @@ def _default_enricher() -> Callable[[bytes | None], EmailBrief | None]:
             msg = email.message_from_bytes(raw)
         except (TypeError, ValueError):
             return None
-        return summarize_for_brief(msg)
+        return summarize_for_brief(msg, user=cfg.user)
 
     return _enrich
+
+
+def _importance_rank(b: EmailBrief | None) -> int:
+    """Sort key — lower is more important. None/unknown sit between
+    'normal' and 'low' so missing-brief rows don't leapfrog real urgent ones."""
+    if b is None:
+        return 2
+    return {"urgent": 0, "normal": 1, "low": 2, "noise": 3}.get(b.importance, 1)
 
 
 def build_morning_digest(
@@ -104,7 +113,7 @@ def build_morning_digest(
     rendered without calling Ollama. None => use the real gemma4 path.
     """
     if enrich_one is None:
-        enrich_one = _default_enricher()
+        enrich_one = _default_enricher(cfg)
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     counts = dict(db.execute(
@@ -141,39 +150,65 @@ def build_morning_digest(
 
     interesting = _interesting_messages(db, since_hours=24)
     if interesting:
-        lines.append("")
-        lines.append(f"*Overnight ({len(interesting)} to review)*")
+        # Two-pass: enrich + filter, then sort by importance, then render.
+        # Rows the LLM marked as noise (or that returned an empty summary)
+        # are suppressed from the per-email block — they've already been
+        # counted in the daily totals above and don't need to pollute review.
+        enriched: list[tuple[int, str, str, EmailBrief]] = []
+        suppressed = 0
         for uid, sender, subject, raw in interesting[:_MAX_INTERESTING]:
             brief = enrich_one(raw)
+            if brief is None:
+                suppressed += 1
+                continue
+            if brief.importance == "noise" or not brief.summary:
+                suppressed += 1
+                continue
+            enriched.append((uid, sender, subject, brief))
+        enriched.sort(key=lambda row: _importance_rank(row[3]))
+
+        if enriched:
+            suffix = f" · {suppressed} noise filtered" if suppressed else ""
+            lines.append("")
+            lines.append(f"*Overnight ({len(enriched)} to review{suffix})*")
+            for uid, sender, subject, brief in enriched:
+                badge = "🔴 " if brief.importance == "urgent" else ""
+                lines.append("")
+                lines.append(
+                    f"• `[{uid}]` {badge}*{_short_subject(subject)}* — {_short_sender(sender)}"
+                )
+                if brief.summary:
+                    lines.append(f"  {brief.summary}")
+                if brief.actions:
+                    lines.append("  *Actions:*")
+                    for a in brief.actions:
+                        lines.append(f"    – {a}")
+                if brief.tools:
+                    # Skip tools whose name already appears in the subject — if
+                    # the email IS about that tool, listing it as "mentioned" is
+                    # redundant noise. Case-insensitive substring match.
+                    subj_lower = (subject or "").lower()
+                    interesting_tools = [
+                        t for t in brief.tools
+                        if (t.name or "").lower() not in subj_lower
+                    ]
+                    if interesting_tools:
+                        lines.append("  *Tools mentioned:*")
+                        for t in interesting_tools:
+                            if t.description:
+                                lines.append(f"    – *{t.name}* — {t.description}")
+                            else:
+                                lines.append(f"    – *{t.name}*")
+            if len(interesting) > _MAX_INTERESTING:
+                lines.append("")
+                lines.append(
+                    f"  …and {len(interesting) - _MAX_INTERESTING} more (truncated)."
+                )
+        elif suppressed:
             lines.append("")
             lines.append(
-                f"• `[{uid}]` *{_short_subject(subject)}* — {_short_sender(sender)}"
+                f"*Overnight* — {suppressed} messages, all filtered as routine."
             )
-            if brief and brief.summary:
-                lines.append(f"  {brief.summary}")
-            if brief and brief.actions:
-                lines.append("  *Actions:*")
-                for a in brief.actions:
-                    lines.append(f"    – {a}")
-            if brief and brief.tools:
-                # Skip tools whose name already appears in the subject — if the
-                # email IS about that tool, listing it as "mentioned" is redundant
-                # noise. Case-insensitive substring match against the subject.
-                subj_lower = (subject or "").lower()
-                interesting_tools = [
-                    t for t in brief.tools
-                    if (t.name or "").lower() not in subj_lower
-                ]
-                if interesting_tools:
-                    lines.append("  *Tools mentioned:*")
-                    for t in interesting_tools:
-                        if t.description:
-                            lines.append(f"    – *{t.name}* — {t.description}")
-                        else:
-                            lines.append(f"    – *{t.name}*")
-        if len(interesting) > _MAX_INTERESTING:
-            lines.append("")
-            lines.append(f"  …and {len(interesting) - _MAX_INTERESTING} more (truncated).")
 
     if pending_rows:
         lines.append("")
