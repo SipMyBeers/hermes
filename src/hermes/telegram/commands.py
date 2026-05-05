@@ -4,6 +4,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 import sqlite3
 from loguru import logger
+from hermes.actions.store import (
+    list_open, count_open, mark_done, dismiss, snooze,
+    expire_snoozed, parse_when,
+)
 from hermes.bookmarks.store import save_bookmark
 from hermes.config import Config
 from hermes.ingest.url import ingest, find_url, URL_RE  # noqa: F401  (URL_RE re-exported)
@@ -18,6 +22,10 @@ HELP_TEXT = """*Hermes Commands*
 /reject <id> — Discard a queued item.
 /retry <id> — Retry a failed send.
 /save <url> [notes...] — Save a bookmark for the weekly digest.
+/actions — Open action items, urgent first.
+/done <id> — Close an action.
+/dismiss <id> — Soft-delete (won't show again).
+/snooze <id> <when> — 'tomorrow', '+3d', 'monday', etc.
 /read <url> — Ingest a URL and reply with summary + actions + tools.
 /invoice <client> [YYYY-MM] — Render an invoice for a client.
 /client list — List configured clients.
@@ -95,6 +103,10 @@ def handle_update(
         "/reject": _cmd_reject,
         "/save": _cmd_save,
         "/read": _cmd_read,
+        "/actions": _cmd_actions,
+        "/done": _cmd_done,
+        "/dismiss": _cmd_dismiss,
+        "/snooze": _cmd_snooze,
         "/help": lambda *a: tg.send_message(HELP_TEXT),
         "/start": lambda *a: tg.send_message(HELP_TEXT),
     }
@@ -195,6 +207,94 @@ def _cmd_read(args, cfg, db, tg):
         tg.send_message(f"That doesn't look like a URL: {url}")
         return
     _ingest_and_reply(url, cfg, db, tg)
+
+
+def _cmd_actions(args, cfg, db, tg):
+    # Reopen anything whose snooze expired since the last call so the
+    # listing reflects current reality without waiting for the cron.
+    expire_snoozed(db)
+    rows = list_open(db, include_low=True, limit=20)
+    if not rows:
+        tg.send_message("No open actions. Nice.")
+        return
+    lines = [f"*Open actions ({len(rows)})*", ""]
+    last_kind = None
+    for a in rows:
+        if a.source_kind != last_kind:
+            lines.append("")
+            label = {"email": "✉️ Email", "digestion": "🔖 URL",
+                     "manual": "📝 Manual"}.get(a.source_kind, a.source_kind)
+            lines.append(f"*{label}*")
+            last_kind = a.source_kind
+        badge = "🔴 " if a.importance == "urgent" else (
+            "⚪ " if a.importance == "low" else ""
+        )
+        ctx = ""
+        if a.source_subject:
+            ctx = f"  _{a.source_subject[:60]}_\n"
+        lines.append(f"{badge}*[{a.id}]* {a.text}\n{ctx}".rstrip())
+    lines.append("")
+    lines.append("`/done <id>` · `/dismiss <id>` · `/snooze <id> <when>`")
+    tg.send_message("\n".join(lines))
+
+
+def _cmd_done(args, cfg, db, tg):
+    if not args:
+        tg.send_message("Usage: /done <action_id>")
+        return
+    try:
+        aid = int(args[0])
+    except ValueError:
+        tg.send_message("Action id must be an integer")
+        return
+    if mark_done(db, aid):
+        tg.send_message(f"Done #{aid} ✓")
+    else:
+        tg.send_message(
+            f"Nothing to close for action {aid} (already done or unknown)"
+        )
+
+
+def _cmd_dismiss(args, cfg, db, tg):
+    if not args:
+        tg.send_message("Usage: /dismiss <action_id>")
+        return
+    try:
+        aid = int(args[0])
+    except ValueError:
+        tg.send_message("Action id must be an integer")
+        return
+    if dismiss(db, aid):
+        tg.send_message(f"Dismissed #{aid}")
+    else:
+        tg.send_message(f"Nothing to dismiss for action {aid}")
+
+
+def _cmd_snooze(args, cfg, db, tg):
+    if len(args) < 2:
+        tg.send_message(
+            "Usage: /snooze <action_id> <when>\n"
+            "When: 'tomorrow', '+3d', 'monday', '2h', 'next week'"
+        )
+        return
+    try:
+        aid = int(args[0])
+    except ValueError:
+        tg.send_message("Action id must be an integer")
+        return
+    when_str = " ".join(args[1:])
+    until = parse_when(when_str)
+    if until is None:
+        tg.send_message(
+            f"Couldn't parse '{when_str}'. Try '+3d', 'tomorrow', 'monday'."
+        )
+        return
+    if snooze(db, aid, until):
+        tg.send_message(
+            f"Snoozed #{aid} until {until.strftime('%a %b %d %H:%M UTC')}"
+        )
+    else:
+        tg.send_message(f"Nothing to snooze for action {aid}")
 
 
 def _ingest_and_reply(url: str, cfg, db, tg) -> None:

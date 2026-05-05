@@ -20,6 +20,7 @@ hermes-invoice-cli = "hermes.invoice.cli:main"
 hermes-digest = "hermes.digest.job:main"
 hermes-stale = "hermes.stale.job:main"
 hermes-bookmarks-weekly = "hermes.bookmarks.job:main"
+hermes-actions-decay = "hermes.actions.job:main"
 
 [dependency-groups]
 dev = [

@@ -149,3 +149,85 @@ def test_read_command_with_no_args_shows_usage(tmp_path):
     update = {"update_id": 51, "message": {"chat": {"id": 42}, "text": "/read"}}
     handle_update(update, _cfg(), db, tg)
     assert "Usage:" in tg.send_message.call_args.args[0]
+
+
+def test_actions_command_lists_open(tmp_path):
+    """/actions surfaces all open rows with ids and the lifecycle hint."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    from hermes.actions.store import add_actions
+    add_actions(db, source_kind="email", source_id=10,
+                texts=["Send invoice", "Reply to Casey"],
+                source_subject="Re: invoice", source_sender="casey@x.com")
+    tg = MagicMock()
+    update = {"update_id": 100, "message": {"chat": {"id": 42}, "text": "/actions"}}
+    handle_update(update, _cfg(), db, tg)
+    text = tg.send_message.call_args.args[0]
+    assert "Open actions (2)" in text
+    assert "[1]" in text
+    assert "[2]" in text
+    assert "Send invoice" in text
+    assert "Reply to Casey" in text
+    assert "/done" in text
+
+
+def test_actions_command_empty_state(tmp_path):
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    tg = MagicMock()
+    update = {"update_id": 101, "message": {"chat": {"id": 42}, "text": "/actions"}}
+    handle_update(update, _cfg(), db, tg)
+    assert tg.send_message.call_args.args[0] == "No open actions. Nice."
+
+
+def test_done_command_marks_action(tmp_path):
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    from hermes.actions.store import add_actions
+    ids = add_actions(db, source_kind="email", source_id=1, texts=["x"])
+    tg = MagicMock()
+    update = {"update_id": 102, "message": {"chat": {"id": 42},
+              "text": f"/done {ids[0]}"}}
+    handle_update(update, _cfg(), db, tg)
+    row = db.execute("SELECT status FROM actions WHERE id=?", (ids[0],)).fetchone()
+    assert row[0] == "done"
+    assert "Done" in tg.send_message.call_args.args[0]
+
+
+def test_dismiss_command_marks_action(tmp_path):
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    from hermes.actions.store import add_actions
+    ids = add_actions(db, source_kind="email", source_id=1, texts=["x"])
+    tg = MagicMock()
+    update = {"update_id": 103, "message": {"chat": {"id": 42},
+              "text": f"/dismiss {ids[0]}"}}
+    handle_update(update, _cfg(), db, tg)
+    row = db.execute("SELECT status FROM actions WHERE id=?", (ids[0],)).fetchone()
+    assert row[0] == "dismissed"
+    assert "Dismissed" in tg.send_message.call_args.args[0]
+
+
+def test_snooze_with_relative(tmp_path):
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    from hermes.actions.store import add_actions
+    ids = add_actions(db, source_kind="email", source_id=1, texts=["x"])
+    tg = MagicMock()
+    update = {"update_id": 104, "message": {"chat": {"id": 42},
+              "text": f"/snooze {ids[0]} +3d"}}
+    handle_update(update, _cfg(), db, tg)
+    row = db.execute(
+        "SELECT status, snoozed_until FROM actions WHERE id=?", (ids[0],)
+    ).fetchone()
+    assert row[0] == "snoozed"
+    assert row[1] is not None
+    assert "Snoozed" in tg.send_message.call_args.args[0]
+
+
+def test_snooze_with_unparseable_when(tmp_path):
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    from hermes.actions.store import add_actions
+    ids = add_actions(db, source_kind="email", source_id=1, texts=["x"])
+    tg = MagicMock()
+    update = {"update_id": 105, "message": {"chat": {"id": 42},
+              "text": f"/snooze {ids[0]} fubar"}}
+    handle_update(update, _cfg(), db, tg)
+    row = db.execute("SELECT status FROM actions WHERE id=?", (ids[0],)).fetchone()
+    assert row[0] == "open"  # untouched
+    assert "Couldn't parse" in tg.send_message.call_args.args[0]

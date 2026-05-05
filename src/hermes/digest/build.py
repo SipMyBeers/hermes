@@ -148,6 +148,25 @@ def build_morning_digest(
             if n:
                 lines.append(f"  {c}: {n}")
 
+    # Phase J.2: surface the open-action queue depth in the brief itself
+    # so the user sees "what do I need to do today" without a separate
+    # /actions roundtrip. Lazily imported so the digest module doesn't
+    # hard-couple to the actions package at import time.
+    from hermes.actions.store import expire_snoozed, count_open, list_open
+    expire_snoozed(db)
+    n_open = count_open(db)
+    if n_open:
+        lines.append("")
+        lines.append(f"*Open actions ({n_open})* — `/actions` for full list")
+        # Show top 3 urgent (and normal as fallback) so the brief stays
+        # self-contained for the most pressing items.
+        top = list_open(db, include_low=False, limit=3)
+        for a in top:
+            if a.importance == "urgent":
+                lines.append(f"  🔴 *[{a.id}]* {a.text[:120]}")
+            else:
+                lines.append(f"  *[{a.id}]* {a.text[:120]}")
+
     interesting = _interesting_messages(db, since_hours=24)
     if interesting:
         # Two-pass: enrich + filter, then sort by importance, then render.

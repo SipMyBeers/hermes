@@ -330,6 +330,29 @@ def test_digest_shows_filtered_count_when_anything_suppressed(tmp_path):
     assert "noise filtered" in text
 
 
+def test_digest_includes_open_actions_summary(tmp_path):
+    """The brief surfaces the open-action queue depth + top items so the
+    user sees what's pending without a separate /actions roundtrip."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    from hermes.actions.store import add_actions
+    add_actions(db, source_kind="email", source_id=1,
+                texts=["Send the renewal quote", "Reply to Sam"],
+                importance="normal",
+                source_subject="Re: renewal", source_sender="sam@x.com")
+    text = build_morning_digest(db, _cfg(), enrich_one=_NO_ENRICH)
+    assert "Open actions (2)" in text
+    assert "Send the renewal quote" in text
+    assert "Reply to Sam" in text
+
+
+def test_digest_omits_open_actions_when_zero(tmp_path):
+    """No open actions => no Open-actions header (don't pollute the brief
+    with a 0-count ghost section)."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    text = build_morning_digest(db, _cfg(), enrich_one=_NO_ENRICH)
+    assert "Open actions" not in text
+
+
 def test_digest_decodes_encoded_word_subjects(tmp_path):
     """RFC 2047 =?UTF-8?B?...?= subjects must be rendered as plain text."""
     db = connect(tmp_path / "t.sqlite"); migrate(db)
