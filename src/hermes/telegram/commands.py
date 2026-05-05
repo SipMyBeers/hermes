@@ -15,22 +15,18 @@ from hermes.mail.smtp_client import SmtpSender, build_message
 from hermes.telegram.client import TelegramClient
 from hermes.telegram.keyboards import actions_card, snooze_choices
 
-HELP_TEXT = """*Hermes Commands*
+HELP_TEXT = """*Hermes — your inbox + URL bot*
 
-/status — Daemon status and 24-hour message counts.
-/digest — Generate the morning report on demand.
-/approve <id> — Send the queued draft or invoice.
-/reject <id> — Discard a queued item.
-/retry <id> — Retry a failed send.
-/save <url> [notes...] — Save a bookmark for the weekly digest.
-/actions — Open action items, urgent first.
-/done <id> — Close an action.
-/dismiss <id> — Soft-delete (won't show again).
-/snooze <id> <when> — 'tomorrow', '+3d', 'monday', etc.
-/read <url> — Ingest a URL and reply with summary + actions + tools.
-/invoice <client> [YYYY-MM] — Render an invoice for a client.
-/client list — List configured clients.
-/reclassify <uid> <label> — Correct a message classification.
+Tap the buttons on cards I send. You don't have to type commands.
+
+If you'd rather type:
+• Send any URL → I'll fetch and summarize it.
+• `/digest` — today's report.
+• `/actions` — open to-dos.
+• `/save <url>` — for the weekly bookmark digest.
+
+Slash-command index for power users:
+`/status` `/approve` `/reject` `/done` `/snooze` `/dismiss` `/retry`
 """
 
 
@@ -108,14 +104,26 @@ def handle_update(
         "/done": _cmd_done,
         "/dismiss": _cmd_dismiss,
         "/snooze": _cmd_snooze,
+        "/start": _cmd_start,
         "/help": lambda *a: tg.send_message(HELP_TEXT),
-        "/start": lambda *a: tg.send_message(HELP_TEXT),
     }
     fn = handlers.get(cmd)
     if not fn:
         tg.send_message(HELP_TEXT)
         return
     fn(args, cfg, db, tg)
+
+
+def _cmd_start(args, cfg, db, tg):
+    """Friendly dashboard — shows open-action count and one-tap shortcuts."""
+    from hermes.telegram.keyboards import dashboard
+    n_open = count_open(db)
+    text = "*Hermes ready*\n"
+    if n_open:
+        text += f"_{n_open} open action{'s' if n_open != 1 else ''}_"
+    else:
+        text += "_no open actions_"
+    tg.send_message(text, reply_markup=dashboard())
 
 
 def _cmd_status(args, cfg, db, tg):

@@ -257,6 +257,57 @@ def test_snooze_with_relative(tmp_path):
     assert "Snoozed" in tg.send_message.call_args.args[0]
 
 
+def test_start_command_posts_dashboard_with_button(tmp_path):
+    """/start replies with a dashboard keyboard offering 'What do I need to
+    do?' and 'Today's digest' buttons — no slash commands required."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    from hermes.actions.store import add_actions
+    add_actions(db, source_kind="email", source_id=1, texts=["x", "y"])
+    tg = MagicMock()
+    update = {"update_id": 200, "message": {"chat": {"id": 42}, "text": "/start"}}
+    handle_update(update, _cfg(), db, tg)
+    tg.send_message.assert_called_once()
+    text = tg.send_message.call_args.args[0]
+    assert "Hermes ready" in text
+    assert "2 open actions" in text
+    kb = tg.send_message.call_args.kwargs.get("reply_markup")
+    assert kb is not None
+    cbs = [b["callback_data"] for r in kb["inline_keyboard"] for b in r]
+    assert "actions" in cbs
+    assert "digest" in cbs
+
+
+def test_start_command_singular_when_one_action(tmp_path):
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    from hermes.actions.store import add_actions
+    add_actions(db, source_kind="email", source_id=1, texts=["x"])
+    tg = MagicMock()
+    update = {"update_id": 201, "message": {"chat": {"id": 42}, "text": "/start"}}
+    handle_update(update, _cfg(), db, tg)
+    text = tg.send_message.call_args.args[0]
+    assert "1 open action" in text
+    assert "1 open actions" not in text
+
+
+def test_start_command_empty_state(tmp_path):
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    tg = MagicMock()
+    update = {"update_id": 202, "message": {"chat": {"id": 42}, "text": "/start"}}
+    handle_update(update, _cfg(), db, tg)
+    text = tg.send_message.call_args.args[0]
+    assert "no open actions" in text
+
+
+def test_help_text_focuses_on_tap_not_type(tmp_path):
+    """The friendly intro should foreground 'tap' over a wall of slash commands."""
+    from hermes.telegram.commands import HELP_TEXT
+    assert "Tap the buttons" in HELP_TEXT
+    # Power-user index still exists, but the intro must come first.
+    tap_idx = HELP_TEXT.find("Tap")
+    cmds_idx = HELP_TEXT.find("Slash-command index")
+    assert 0 <= tap_idx < cmds_idx
+
+
 def test_snooze_with_unparseable_when(tmp_path):
     db = connect(tmp_path / "t.sqlite"); migrate(db)
     from hermes.actions.store import add_actions
