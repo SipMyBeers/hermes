@@ -407,6 +407,57 @@ def test_process_message_non_urgent_does_not_ping(tmp_path, monkeypatch):
     assert urgent_calls == []
 
 
+def test_process_message_extracts_receipt_when_transactional(tmp_path, monkeypatch):
+    """Transactional class triggers gemma4 receipt extraction; a confident
+    extraction lands as a direction='in' ledger row."""
+    from datetime import date
+    from hermes.db import connect, migrate
+    from hermes.extract.receipt import ReceiptInfo
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    msg = message_from_bytes((FIXTURES / "transactional_receipt.eml").read_bytes())
+    fake_imap = MagicMock()
+    fake_receipt = ReceiptInfo(
+        vendor="Stripe", amount_cents=2900, currency="USD",
+        line_items=("Pro plan",), date=date(2026, 5, 1), confidence=0.92,
+    )
+    extract_calls: list = []
+    def fake_extract(m, *a, **kw):
+        extract_calls.append(m)
+        return fake_receipt
+    monkeypatch.setattr(
+        "hermes.extract.receipt.extract_receipt", fake_extract
+    )
+    process_message(uid=400, msg=msg, db=db, cfg=_cfg(), imap=fake_imap,
+                    llm_classifier=None, drafter=None)
+    assert len(extract_calls) == 1
+    rows = list(db.execute(
+        "SELECT direction, vendor, amount_cents, status FROM ledger"
+    ))
+    assert rows == [("in", "Stripe", 2900, "paid")]
+
+
+def test_process_message_skips_receipt_for_non_transactional(tmp_path, monkeypatch):
+    """Client mail must NOT trigger the receipt extractor — saves an LLM
+    call and avoids polluting the ledger with non-receipts."""
+    from hermes.db import connect, migrate
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    msg = message_from_bytes((FIXTURES / "client_boarhog.eml").read_bytes())
+    fake_imap = MagicMock()
+    extract_calls: list = []
+    def fake_extract(m, *a, **kw):
+        extract_calls.append(m)
+        raise AssertionError("extract_receipt should not be called for client mail")
+    monkeypatch.setattr(
+        "hermes.extract.receipt.extract_receipt", fake_extract
+    )
+    monkeypatch.setattr("hermes.mail.daemon._telegram", lambda cfg: MagicMock())
+    process_message(uid=401, msg=msg, db=db, cfg=_cfg(), imap=fake_imap,
+                    llm_classifier=None, drafter=None)
+    assert extract_calls == []
+    rows = db.execute("SELECT COUNT(*) FROM ledger").fetchone()
+    assert rows[0] == 0
+
+
 def test_known_client_does_not_get_lead_label(tmp_path, monkeypatch):
     """A message from a known client domain must not be flagged as a lead."""
     from hermes.db import connect, migrate

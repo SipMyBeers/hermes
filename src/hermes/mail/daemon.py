@@ -171,6 +171,20 @@ def process_message(
     except Exception as e:
         logger.error("imap label failed uid={} err={}", uid, e)
 
+    # Phase L stage 2: receipts → ledger. When a transactional email rolls
+    # in, run a gemma4 extraction over the body and append a direction='in'
+    # ledger row when the result is confident enough. Wrapped broadly —
+    # extractor / ledger failures must never break the daemon's primary
+    # classification + label flow.
+    if classification.label == "transactional":
+        try:
+            from hermes.extract.receipt import extract_receipt
+            from hermes.extract.ledger_writer import maybe_write_receipt
+            receipt = extract_receipt(msg)
+            maybe_write_receipt(db, receipt, message_id=message_id)
+        except Exception as e:
+            logger.warning("receipt pipeline failed for uid={}: {}", uid, e)
+
     # Phase J.2: enrich worth-reading classes and persist actions to the
     # cross-source action log. Wrapped so any failure leaves the messages
     # row intact — the INSERT above already committed.
