@@ -15,6 +15,7 @@ from hermes.config import Config, load_config
 from hermes.classifier.rules import classify as rule_classify, ClientHint
 from hermes.classifier.llm import classify_llm, LLMResult
 from hermes.classifier.drafter import draft_reply
+from hermes.classifier.learned import is_learned_promo
 from hermes.db import connect, migrate
 from hermes.digest.enrich import summarize_for_brief
 from hermes.extract.lead import detect_lead, LeadSignal
@@ -45,8 +46,15 @@ def classify_message(
     msg: Message,
     cfg: Config,
     llm_classifier: Callable[[Message], LLMResult] | None,
+    db: sqlite3.Connection | None = None,
 ) -> Classification:
-    rule = rule_classify(msg, _client_domains(cfg), personal_allowlist=set())
+    learned: Callable[[str], bool] | None = None
+    if db is not None:
+        learned = lambda addr: is_learned_promo(db, addr)
+    rule = rule_classify(
+        msg, _client_domains(cfg), personal_allowlist=set(),
+        learned_promo_lookup=learned,
+    )
     if rule.label != "unknown":
         return Classification(
             label=rule.label,
@@ -115,7 +123,7 @@ def process_message(
     llm_classifier: Callable[[Message], LLMResult] | None,
     drafter: Callable[[Message, str], str] | None,
 ) -> None:
-    classification = classify_message(msg, cfg, llm_classifier)
+    classification = classify_message(msg, cfg, llm_classifier, db=db)
     label = _label_for(classification)
     message_id = str(msg.get("Message-ID", f"hermes-{uid}"))
     date_hdr = msg.get("Date")

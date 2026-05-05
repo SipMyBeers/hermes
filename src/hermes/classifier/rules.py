@@ -8,9 +8,12 @@ Rules are evaluated in priority order; the first match wins:
   3. Sender in personal allowlist -> personal  (allowlist is more specific
      than domain)
   4. Sender domain matches a client -> client
-  5. Subject matches a transactional pattern -> transactional (confidence 0.9
+  5. Sender accumulated Dismiss taps via the action log -> promo
+     (Phase L stage 2 dismiss-learning loop). Placed AFTER client so a
+     client who somehow ended up in learned_promos still wins.
+  6. Subject matches a transactional pattern -> transactional (confidence 0.9
      bypasses the LLM tier-2 threshold of 0.75 by design)
-  6. Otherwise -> unknown (caller's tier-2 LLM handles)
+  7. Otherwise -> unknown (caller's tier-2 LLM handles)
 
 Note: bare-prefix sender heuristics (noreply@, notifications@, hello@) were
 tried in an earlier draft but produced false positives on real ops signals
@@ -22,6 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from email.message import Message
 from email.utils import getaddresses
+from typing import Callable
 import re
 
 _TX_SUBJECT_PATTERNS = [
@@ -81,7 +85,14 @@ def classify(
     msg: Message,
     client_domains: dict[str, ClientHint],
     personal_allowlist: set[str],
+    learned_promo_lookup: Callable[[str], bool] | None = None,
 ) -> RuleResult:
+    """Tier-1 classification.
+
+    learned_promo_lookup: optional callable bound to the live DB so the rule
+    chain can ask 'has the user Dismissed mail from this sender N+ times?'
+    without coupling this module to sqlite. Pure callers (most tests) leave
+    it None and the lookup is skipped."""
     _, sender_addr = _sender(msg)
 
     if msg.get("List-Unsubscribe"):
@@ -105,6 +116,16 @@ def classify(
             confidence=1.0,
             reason=f"sender domain matches client {hint.client}",
             client=hint.client,
+        )
+
+    # Phase L stage 2: learned-promo feedback. Placed AFTER client so a
+    # client who somehow ended up in learned_promos still gets the client
+    # label. None-safe so pure callers (tests, no-DB paths) skip it.
+    if learned_promo_lookup is not None and sender_addr and learned_promo_lookup(sender_addr):
+        return RuleResult(
+            label="promo",
+            confidence=1.0,
+            reason=f"learned promo: {sender_addr} previously dismissed",
         )
 
     subject = str(msg.get("Subject", "") or "")

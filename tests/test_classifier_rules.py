@@ -129,3 +129,36 @@ def test_client_domain_with_noreply_local_still_classifies_as_client():
     r = classify(msg, client_domains=hints, personal_allowlist=set())
     assert r.label == "client"
     assert r.client == "acme"
+
+
+def test_classify_uses_learned_promo_lookup():
+    """Phase L stage 2: when the lookup says the sender was Dismissed enough,
+    classify as promo even with no other signal."""
+    msg = _make_msg("Casey <casey@junk.example>", "Random", "body")
+    r = classify(
+        msg, client_domains={}, personal_allowlist=set(),
+        learned_promo_lookup=lambda addr: addr == "casey@junk.example",
+    )
+    assert r.label == "promo"
+    assert "learned promo" in r.reason
+
+
+def test_classify_skips_lookup_when_none():
+    """Default behaviour with no lookup falls through to 'unknown' so
+    existing pure-call sites keep their semantics."""
+    msg = _make_msg("Casey <casey@junk.example>", "Random", "body")
+    r = classify(msg, client_domains={}, personal_allowlist=set())
+    assert r.label == "unknown"
+
+
+def test_classify_client_beats_learned_promo():
+    """Even if the user dismissed a client's mail by mistake, the client-domain
+    match still wins. Learned-promo is a fallback after client/personal/etc."""
+    msg = _make_msg("Acme <ops@acme.example>", "Sprint update", "body")
+    hints = {"acme.example": ClientHint(client="acme")}
+    r = classify(
+        msg, client_domains=hints, personal_allowlist=set(),
+        learned_promo_lookup=lambda addr: True,
+    )
+    assert r.label == "client"
+    assert r.client == "acme"
