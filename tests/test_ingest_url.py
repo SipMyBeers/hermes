@@ -40,6 +40,17 @@ def test_ingest_web_persists_and_returns(tmp_path):
     rows = list(db.execute("SELECT url, summary, actions FROM digestions"))
     assert rows[0][0] == "https://example.com/x"
     assert json.loads(rows[0][2]) == ["Read it"]
+    # Phase J.2: action also lands in the cross-source actions log,
+    # tagged with the digestion id so /actions can deep-link back.
+    action_rows = list(db.execute(
+        "SELECT source_kind, source_id, text, importance, status FROM actions"
+    ))
+    assert len(action_rows) == 1
+    assert action_rows[0][0] == "digestion"
+    assert action_rows[0][1] == d.id
+    assert action_rows[0][2] == "Read it"
+    assert action_rows[0][3] == "normal"
+    assert action_rows[0][4] == "open"
 
 
 def test_ingest_video_uses_video_extractor(tmp_path):

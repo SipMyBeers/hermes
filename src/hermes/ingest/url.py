@@ -10,6 +10,7 @@ import re
 import sqlite3
 from urllib.parse import urlparse
 from loguru import logger
+from hermes.actions.store import add_actions
 from hermes.ingest.web import extract_web, ExtractedDoc
 from hermes.ingest.summary import summarize, ContentSummary
 
@@ -113,6 +114,22 @@ def ingest(
             error,
         ),
     )
+
+    # Phase J.2: persist any extracted actions to the cross-source action
+    # log so /actions surfaces URL-derived TODOs alongside email ones.
+    # Skip when there's an extraction error — the actions tuple is empty
+    # in that case anyway, but the explicit guard keeps intent obvious.
+    if summary_obj.actions and not error:
+        add_actions(
+            db,
+            source_kind="digestion",
+            source_id=cur.lastrowid,
+            texts=list(summary_obj.actions),
+            importance="normal",  # URL-ingest doesn't yet return importance
+            source_subject=title,
+            source_sender=url,
+        )
+
     return Digestion(
         id=cur.lastrowid,
         url=url, kind=kind, title=title,
