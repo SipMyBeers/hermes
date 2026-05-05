@@ -152,22 +152,59 @@ def test_read_command_with_no_args_shows_usage(tmp_path):
 
 
 def test_actions_command_lists_open(tmp_path):
-    """/actions surfaces all open rows with ids and the lifecycle hint."""
+    """/actions sends a header + group label + one card per action.
+
+    Each card is its own send_message call carrying an inline keyboard with
+    Done/Snooze/Dismiss buttons that callback to action-id-bearing payloads.
+    """
     db = connect(tmp_path / "t.sqlite"); migrate(db)
     from hermes.actions.store import add_actions
-    add_actions(db, source_kind="email", source_id=10,
-                texts=["Send invoice", "Reply to Casey"],
-                source_subject="Re: invoice", source_sender="casey@x.com")
+    ids = add_actions(db, source_kind="email", source_id=10,
+                     texts=["Send invoice", "Reply to Casey"],
+                     source_subject="Re: invoice", source_sender="casey@x.com")
     tg = MagicMock()
     update = {"update_id": 100, "message": {"chat": {"id": 42}, "text": "/actions"}}
     handle_update(update, _cfg(), db, tg)
-    text = tg.send_message.call_args.args[0]
-    assert "Open actions (2)" in text
-    assert "[1]" in text
-    assert "[2]" in text
-    assert "Send invoice" in text
-    assert "Reply to Casey" in text
-    assert "/done" in text
+    # Header + one group label + 2 cards = 4 calls.
+    assert tg.send_message.call_count == 4
+    texts = [c.args[0] for c in tg.send_message.call_args_list]
+    assert "Open actions (2)" in texts[0]
+    # Concatenate everything we sent and check both action texts surface.
+    flat = "\n".join(texts)
+    assert "Send invoice" in flat
+    assert "Reply to Casey" in flat
+    # The two cards must each carry a Done/Snooze/Dismiss keyboard with the
+    # matching action id.
+    card_calls = [c for c in tg.send_message.call_args_list
+                  if c.kwargs.get("reply_markup")]
+    assert len(card_calls) == 2
+    seen_ids = set()
+    for c in card_calls:
+        kb = c.kwargs["reply_markup"]
+        cbs = [b["callback_data"] for r in kb["inline_keyboard"] for b in r]
+        # exactly one done:<id> per card
+        for cb in cbs:
+            if cb.startswith("done:"):
+                seen_ids.add(int(cb.split(":")[1]))
+    assert seen_ids == set(ids)
+
+
+def test_actions_command_each_card_has_buttons(tmp_path):
+    """Every per-action card carries the three-button row."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    from hermes.actions.store import add_actions
+    add_actions(db, source_kind="email", source_id=11, texts=["x"])
+    tg = MagicMock()
+    update = {"update_id": 110, "message": {"chat": {"id": 42}, "text": "/actions"}}
+    handle_update(update, _cfg(), db, tg)
+    card_calls = [c for c in tg.send_message.call_args_list
+                  if c.kwargs.get("reply_markup")]
+    assert len(card_calls) == 1
+    kb = card_calls[0].kwargs["reply_markup"]
+    cbs = [b["callback_data"] for r in kb["inline_keyboard"] for b in r]
+    assert any(cb.startswith("done:") for cb in cbs)
+    assert any(cb.startswith("snooze:") for cb in cbs)
+    assert any(cb.startswith("dismiss:") for cb in cbs)
 
 
 def test_actions_command_empty_state(tmp_path):
@@ -175,7 +212,7 @@ def test_actions_command_empty_state(tmp_path):
     tg = MagicMock()
     update = {"update_id": 101, "message": {"chat": {"id": 42}, "text": "/actions"}}
     handle_update(update, _cfg(), db, tg)
-    assert tg.send_message.call_args.args[0] == "No open actions. Nice."
+    assert tg.send_message.call_args.args[0] == "No open actions. ✓"
 
 
 def test_done_command_marks_action(tmp_path):

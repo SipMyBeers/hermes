@@ -214,29 +214,24 @@ def _cmd_actions(args, cfg, db, tg):
     # Reopen anything whose snooze expired since the last call so the
     # listing reflects current reality without waiting for the cron.
     expire_snoozed(db)
-    rows = list_open(db, include_low=True, limit=20)
+    rows = list_open(db, include_low=True, limit=15)
     if not rows:
-        tg.send_message("No open actions. Nice.")
+        tg.send_message("No open actions. ✓")
         return
-    lines = [f"*Open actions ({len(rows)})*", ""]
+    tg.send_message(f"*Open actions ({len(rows)})*")
     last_kind = None
     for a in rows:
         if a.source_kind != last_kind:
-            lines.append("")
-            label = {"email": "✉️ Email", "digestion": "🔖 URL",
-                     "manual": "📝 Manual"}.get(a.source_kind, a.source_kind)
-            lines.append(f"*{label}*")
+            label = {"email": "✉️ *Email*", "digestion": "🔖 *URL*",
+                     "manual": "📝 *Manual*"}.get(a.source_kind, a.source_kind)
+            tg.send_message(label)
             last_kind = a.source_kind
-        badge = "🔴 " if a.importance == "urgent" else (
-            "⚪ " if a.importance == "low" else ""
+        badge = "🔴 " if a.importance == "urgent" else ""
+        ctx = f"\n_{a.source_subject[:80]}_" if a.source_subject else ""
+        tg.send_message(
+            f"{badge}{a.text}{ctx}",
+            reply_markup=actions_card(a.id),
         )
-        ctx = ""
-        if a.source_subject:
-            ctx = f"  _{a.source_subject[:60]}_\n"
-        lines.append(f"{badge}*[{a.id}]* {a.text}\n{ctx}".rstrip())
-    lines.append("")
-    lines.append("`/done <id>` · `/dismiss <id>` · `/snooze <id> <when>`")
-    tg.send_message("\n".join(lines))
 
 
 def _cmd_done(args, cfg, db, tg):
