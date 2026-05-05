@@ -2,6 +2,7 @@ from email import message_from_bytes
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 import httpx
+from hermes.config import UserConfig
 from hermes.digest.enrich import summarize_for_brief, EmailBrief, Tool
 
 FIXTURES = Path(__file__).parent / "fixtures" / "mbox"
@@ -67,3 +68,40 @@ def test_summarize_drops_empty_action_strings_and_nameless_tools():
         brief = summarize_for_brief(_msg())
     assert brief.actions == ("do this", "and that")
     assert brief.tools == (Tool(name="Datadog", description=""),)
+
+
+def test_summarize_uses_user_name_in_prompt():
+    """Passing UserConfig(name=...) injects the name into the gemma4 prompt."""
+    fake_resp = MagicMock()
+    fake_resp.json.return_value = {"response": '{"summary":"x","actions":[],"tools":[]}'}
+    fake_resp.raise_for_status = MagicMock()
+    with patch("hermes.digest.enrich.httpx.post", return_value=fake_resp) as p:
+        summarize_for_brief(_msg(), user=UserConfig(name="Dylan", role="founder"))
+    # The mock recorded the JSON payload; assert 'Dylan' made it into the prompt.
+    sent = p.call_args.kwargs["json"]
+    assert "Dylan" in sent["prompt"]
+    assert "founder" in sent["prompt"]
+
+
+def test_summarize_returns_importance():
+    """A response with importance='urgent' surfaces on the EmailBrief."""
+    fake_resp = MagicMock()
+    fake_resp.json.return_value = {
+        "response": '{"summary":"deadline","actions":[],"tools":[],"importance":"urgent"}'
+    }
+    fake_resp.raise_for_status = MagicMock()
+    with patch("hermes.digest.enrich.httpx.post", return_value=fake_resp):
+        brief = summarize_for_brief(_msg())
+    assert brief.importance == "urgent"
+
+
+def test_summarize_clamps_unknown_importance():
+    """An out-of-vocabulary importance falls back to 'normal' rather than leaking."""
+    fake_resp = MagicMock()
+    fake_resp.json.return_value = {
+        "response": '{"summary":"x","actions":[],"tools":[],"importance":"critical"}'
+    }
+    fake_resp.raise_for_status = MagicMock()
+    with patch("hermes.digest.enrich.httpx.post", return_value=fake_resp):
+        brief = summarize_for_brief(_msg())
+    assert brief.importance == "normal"
