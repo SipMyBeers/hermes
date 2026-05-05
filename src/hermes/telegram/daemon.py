@@ -6,7 +6,7 @@ from loguru import logger
 from hermes.config import load_config
 from hermes.db import connect, migrate
 from hermes.telegram.client import TelegramClient
-from hermes.telegram.commands import handle_update
+from hermes.telegram.commands import handle_update, handle_callback
 
 
 def main() -> int:
@@ -25,7 +25,10 @@ def main() -> int:
             for u in updates:
                 offset = u["update_id"] + 1
                 try:
-                    handle_update(u, cfg, db, tg)
+                    if "callback_query" in u:
+                        handle_callback(u, cfg, db, tg)
+                    else:
+                        handle_update(u, cfg, db, tg)
                 except Exception as e:
                     logger.exception("handler failed: {}", e)
                     tg.send_message(f"⚠ handler error: {e}")

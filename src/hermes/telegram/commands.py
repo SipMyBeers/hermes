@@ -13,6 +13,7 @@ from hermes.config import Config
 from hermes.ingest.url import ingest, find_url, URL_RE  # noqa: F401  (URL_RE re-exported)
 from hermes.mail.smtp_client import SmtpSender, build_message
 from hermes.telegram.client import TelegramClient
+from hermes.telegram.keyboards import actions_card, snooze_choices
 
 HELP_TEXT = """*Hermes Commands*
 
@@ -295,6 +296,143 @@ def _cmd_snooze(args, cfg, db, tg):
         )
     else:
         tg.send_message(f"Nothing to snooze for action {aid}")
+
+
+def handle_callback(
+    update: dict,
+    cfg: Config,
+    db: sqlite3.Connection,
+    tg: TelegramClient,
+) -> None:
+    """Route Telegram inline-button taps. Verbs:
+    done | dismiss | snooze | unsnooze | approve | reject | actions | digest.
+    """
+    cb = update.get("callback_query") or {}
+    if not cb:
+        return
+    msg = cb.get("message") or {}
+    if msg.get("chat", {}).get("id") != cfg.telegram.chat_id:
+        logger.warning(
+            "ignoring callback from chat_id={}",
+            msg.get("chat", {}).get("id"),
+        )
+        try:
+            tg.answer_callback_query(cb.get("id", ""), text="not allowed")
+        except Exception:
+            pass
+        return
+    callback_id = cb.get("id", "")
+    data = (cb.get("data") or "").strip()
+    msg_id = msg.get("message_id")
+    parts = data.split(":", 2)
+    verb = parts[0] if parts else ""
+
+    try:
+        if verb == "done" and len(parts) >= 2:
+            aid = int(parts[1])
+            ok = mark_done(db, aid)
+            tg.answer_callback_query(callback_id, "✓ done" if ok else "already closed")
+            if msg_id and ok:
+                _decorate(tg, msg, prefix="✓ ", suffix="\n\n_done_",
+                          remove_keyboard=True)
+        elif verb == "dismiss" and len(parts) >= 2:
+            aid = int(parts[1])
+            ok = dismiss(db, aid)
+            tg.answer_callback_query(callback_id, "dismissed" if ok else "already closed")
+            if msg_id and ok:
+                _decorate(tg, msg, prefix="🚫 ", suffix="\n\n_dismissed_",
+                          remove_keyboard=True)
+        elif verb == "snooze" and len(parts) == 2:
+            # Root tap — open the duration sub-keyboard. No DB write yet.
+            aid = int(parts[1])
+            tg.answer_callback_query(callback_id, "")
+            if msg_id:
+                tg.edit_message_text(
+                    msg_id,
+                    text=(msg.get("text") or "") + "\n\n_pick a snooze:_",
+                    reply_markup=snooze_choices(aid),
+                )
+        elif verb == "snooze" and len(parts) == 3:
+            aid = int(parts[1])
+            spec = parts[2]
+            until = parse_when(spec)
+            ok = until is not None and snooze(db, aid, until)
+            tg.answer_callback_query(
+                callback_id, f"snoozed {spec}" if ok else "couldn't snooze"
+            )
+            if msg_id and ok:
+                _decorate(
+                    tg, msg, prefix="🌙 ",
+                    suffix=f"\n\n_snoozed until {until.strftime('%a %b %d %H:%M UTC')}_",
+                    remove_keyboard=True,
+                    strip_suffix="\n\n_pick a snooze:_",
+                )
+        elif verb == "unsnooze" and len(parts) >= 2:
+            # Back from the snooze sub-keyboard — restore the original card.
+            aid = int(parts[1])
+            tg.answer_callback_query(callback_id, "")
+            if msg_id:
+                base = (msg.get("text") or "").split("\n\n_pick a snooze:_")[0]
+                tg.edit_message_text(
+                    msg_id, text=base, reply_markup=actions_card(aid)
+                )
+        elif verb == "approve" and len(parts) >= 2:
+            oid = int(parts[1])
+            _cmd_approve([str(oid)], cfg, db, tg)
+            tg.answer_callback_query(callback_id, "sending")
+            if msg_id:
+                _decorate(tg, msg, prefix="✉️ ", suffix="\n\n_sent_",
+                          remove_keyboard=True)
+        elif verb == "reject" and len(parts) >= 2:
+            oid = int(parts[1])
+            _cmd_reject([str(oid)], cfg, db, tg)
+            tg.answer_callback_query(callback_id, "discarded")
+            if msg_id:
+                _decorate(tg, msg, prefix="🗑️ ", suffix="\n\n_discarded_",
+                          remove_keyboard=True)
+        elif verb == "actions":
+            tg.answer_callback_query(callback_id, "")
+            _cmd_actions([], cfg, db, tg)
+        elif verb == "digest":
+            tg.answer_callback_query(callback_id, "")
+            _cmd_digest([], cfg, db, tg)
+        else:
+            tg.answer_callback_query(callback_id, "?")
+    except Exception as e:
+        logger.exception("callback handler failed: {}", e)
+        try:
+            tg.answer_callback_query(callback_id, "error")
+        except Exception:
+            pass
+
+
+def _decorate(
+    tg: TelegramClient,
+    msg: dict,
+    *,
+    prefix: str,
+    suffix: str,
+    remove_keyboard: bool,
+    strip_suffix: str = "",
+) -> None:
+    """Edit the original card to show its terminal state.
+
+    `prefix` is added once (idempotent — won't double-stack if the card was
+    already decorated). `strip_suffix` lets snooze-confirmation strip the
+    intermediate '_pick a snooze:_' line that the sub-keyboard added.
+    """
+    text = msg.get("text") or ""
+    if strip_suffix and strip_suffix in text:
+        text = text.split(strip_suffix)[0]
+    bare_prefix = prefix.rstrip()
+    if bare_prefix and not text.lstrip().startswith(bare_prefix):
+        text = prefix + text
+    text += suffix
+    markup = None if remove_keyboard else msg.get("reply_markup")
+    try:
+        tg.edit_message_text(msg.get("message_id"), text=text, reply_markup=markup)
+    except Exception as e:
+        logger.warning("edit_message_text failed: {}", e)
 
 
 def _ingest_and_reply(url: str, cfg, db, tg) -> None:
