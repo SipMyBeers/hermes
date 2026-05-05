@@ -136,10 +136,21 @@ def main() -> int:
     year, mo = month_norm.split("-")
 
     cfg = load_config()
-    invoices_root = Path(args.out_dir)
+
+    # Dry-run renders to a tempdir so the canonical invoice numbering scope
+    # at args.out_dir isn't polluted. The May 2026 invoice was numbered BH-004
+    # instead of BH-003 because successive dry-runs each wrote a PDF to the
+    # canonical dir and bumped the sequence.
+    if args.send:
+        invoices_root = Path(args.out_dir)
+    else:
+        import tempfile
+        invoices_root = Path(tempfile.mkdtemp(prefix="hermes-dryrun-"))
+
     out_dir = invoices_root / year / mo
     ctx, pdf_path = build_invoice_for_client(
-        cfg, args.client, month_norm, out_dir, invoices_root=invoices_root
+        cfg, args.client, month_norm, out_dir,
+        invoices_root=Path(args.out_dir),  # numbering scope is always canonical
     )
     subject, body = _compose_email(ctx, cfg)
 
@@ -152,7 +163,7 @@ def main() -> int:
     print(f"--- Body ---\n{body}\n---")
 
     if not args.send:
-        print("\nDry-run (use --send to actually email). PDF written above.")
+        print("\nDry-run (use --send to actually email). PDF in tempdir; canonical sequence untouched.")
         return 0
 
     msg = build_message(cfg.gmail, ctx.client_email, subject, body, [pdf_path])
