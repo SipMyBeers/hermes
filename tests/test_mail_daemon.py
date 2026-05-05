@@ -226,6 +226,11 @@ def test_lead_detection_persists_and_pings(tmp_path, monkeypatch):
     text = fake_tg.send_message.call_args.args[0]
     assert "New lead" in text
     assert "unknown.io" in text
+    # Phase L: lead pings carry a Draft-reply button bound to uid.
+    kb = fake_tg.send_message.call_args.kwargs.get("reply_markup")
+    assert kb is not None
+    cbs = [b["callback_data"] for r in kb["inline_keyboard"] for b in r]
+    assert "draft:200" in cbs
 
 
 def test_process_message_persists_actions_for_client(tmp_path, monkeypatch):
@@ -308,8 +313,9 @@ def test_process_message_urgent_pings_telegram(tmp_path, monkeypatch):
 
 
 def test_urgent_inbox_ping_includes_action_button(tmp_path, monkeypatch):
-    """When actions were extracted, the urgent ping carries a Done/Snooze/
-    Dismiss inline keyboard wired to the first action's id."""
+    """Urgent ping with at least one action carries a two-row keyboard:
+    Done/Snooze/Dismiss bound to the first action id, and Draft reply
+    bound to the message uid."""
     from hermes.db import connect, migrate
     db = connect(tmp_path / "t.sqlite")
     migrate(db)
@@ -340,11 +346,14 @@ def test_urgent_inbox_ping_includes_action_button(tmp_path, monkeypatch):
     assert f"done:{aid}" in cbs
     assert f"snooze:{aid}" in cbs
     assert f"dismiss:{aid}" in cbs
+    # Phase L: second-row Draft button wired to the message uid.
+    assert "draft:304" in cbs
 
 
-def test_urgent_inbox_ping_without_actions_has_no_button(tmp_path, monkeypatch):
-    """If the LLM returned a summary but zero actions, the urgent ping
-    still fires but without a keyboard (no id to bind to)."""
+def test_urgent_inbox_ping_without_actions_carries_lead_card(tmp_path, monkeypatch):
+    """When no actions were extracted, the urgent ping falls back to a
+    single-row lead_card with the Draft button so the user can still
+    queue a reply in one tap."""
     from hermes.db import connect, migrate
     db = connect(tmp_path / "t.sqlite")
     migrate(db)
@@ -364,7 +373,12 @@ def test_urgent_inbox_ping_without_actions_has_no_button(tmp_path, monkeypatch):
     urgent_calls = [c for c in fake_tg.send_message.call_args_list
                     if "🔴" in c.args[0]]
     assert len(urgent_calls) == 1
-    assert urgent_calls[0].kwargs.get("reply_markup") is None
+    kb = urgent_calls[0].kwargs.get("reply_markup")
+    assert kb is not None
+    cbs = [b["callback_data"] for r in kb["inline_keyboard"] for b in r]
+    assert "draft:305" in cbs
+    # No action ids existed so no done/snooze/dismiss buttons either.
+    assert not any(cb.startswith("done:") for cb in cbs)
 
 
 def test_process_message_non_urgent_does_not_ping(tmp_path, monkeypatch):

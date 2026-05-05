@@ -248,3 +248,30 @@ def test_decorate_does_not_double_prefix(tmp_path):
     _decorate(tg, msg, prefix="✓ ", suffix="\n\n_done_", remove_keyboard=True)
     edit_text = tg.edit_message_text.call_args.kwargs["text"]
     assert edit_text.count("✓") == 1
+
+
+def test_callback_draft_invokes_draft_handler(tmp_path):
+    """Tapping a Draft button on a lead/urgent card routes through
+    _cmd_draft with the message uid as args. Verify by seeding a message
+    row with cached draft_text and asserting the outbox row gets queued."""
+    from datetime import datetime, timezone
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    db.execute(
+        "INSERT INTO messages(uid, message_id, received_at, sender, subject, "
+        "classification, classifier, draft_text) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (42, "m-42", datetime.now(timezone.utc).isoformat(),
+         "Casey <casey@x.com>", "Inquiry", "client", "rule",
+         "cached draft body"),
+    )
+    tg = MagicMock()
+    handle_callback(_cb("draft:42"), _cfg(), db, tg)
+    # Outbox row inserted with the cached body.
+    out = db.execute(
+        "SELECT body, related_uid FROM outbox WHERE related_uid=42"
+    ).fetchone()
+    assert out is not None
+    assert out[0] == "cached draft body"
+    # Flash acknowledged the action.
+    flash = tg.answer_callback_query.call_args.args[1]
+    assert "drafting" in flash.lower()

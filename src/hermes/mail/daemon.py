@@ -20,7 +20,7 @@ from hermes.digest.enrich import summarize_for_brief
 from hermes.extract.lead import detect_lead, LeadSignal
 from hermes.mail.imap_client import ImapClient
 from hermes.telegram.client import TelegramClient
-from hermes.telegram.keyboards import actions_card
+from hermes.telegram.keyboards import lead_card, urgent_card
 
 LLM_THRESHOLD = 0.75
 
@@ -194,15 +194,21 @@ def process_message(
                         f"{brief.summary}"
                     )
                     if new_ids:
-                        # Attach the first action's button row to the ping;
-                        # any sibling actions for the same email show up as
-                        # their own cards via /actions. One tap to close the
-                        # most-likely-relevant todo without typing an id.
+                        # Two-row keyboard: action triad (Done/Snooze/
+                        # Dismiss bound to the first action id) + Draft
+                        # reply bound to the message uid. Lets the user
+                        # close the todo AND queue a reply from one ping.
                         _telegram(cfg).send_message(
-                            ping_text, reply_markup=actions_card(new_ids[0])
+                            ping_text,
+                            reply_markup=urgent_card(new_ids[0], uid),
                         )
                     else:
-                        _telegram(cfg).send_message(ping_text)
+                        # No action ids extracted but the LLM still flagged
+                        # this as urgent — surface the Draft button alone
+                        # so the user can move on it.
+                        _telegram(cfg).send_message(
+                            ping_text, reply_markup=lead_card(uid),
+                        )
                 except Exception as e:
                     logger.warning("urgent ping failed: {}", e)
         except Exception as e:
@@ -222,16 +228,12 @@ def process_message(
                 logger.error("imap lead-label failed uid={} err={}", uid, e)
             try:
                 subj = subject[:140]
-                # TODO(phase-K.2): once /draft is wired, swap this plain
-                # text ping for a lead_card(uid) inline keyboard with
-                # 'Draft reply' + 'Dismiss' buttons. For now the slash
-                # commands stay so the user has a path forward.
                 _telegram(cfg).send_message(
                     f"🆕 *New lead*\n"
                     f"From: {lead.sender}\n"
                     f"Subject: {subj}\n"
-                    f"Why: {lead.reason}\n"
-                    f"`/draft {uid}` · `/reclassify {uid} other` to dismiss"
+                    f"Why: {lead.reason}",
+                    reply_markup=lead_card(uid),
                 )
             except Exception as e:
                 logger.warning("lead telegram ping failed: {}", e)

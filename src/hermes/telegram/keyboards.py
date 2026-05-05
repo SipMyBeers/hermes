@@ -43,3 +43,30 @@ def dashboard() -> dict:
     ], [
         {"text": "📊 Today's digest", "callback_data": "digest"},
     ]]}
+
+
+def lead_card(uid: int) -> dict:
+    """Single-button card attached to '🆕 New lead' pings.
+
+    Tapping fires the draft callback with the originating message uid so
+    the user can go from notification → reviewable Send/Discard card in
+    one tap, no slash commands."""
+    return {"inline_keyboard": [[
+        {"text": "✏️ Draft reply", "callback_data": f"draft:{uid}"},
+    ]]}
+
+
+def urgent_card(action_id: int, uid: int) -> dict:
+    """Two-row keyboard for urgent inbox pings: action triad + draft.
+
+    The first row is the standard Done/Snooze/Dismiss bound to the
+    extracted action id. The second row offers Draft reply bound to the
+    message uid so the user can close the email loop without navigating
+    away. Two rows keeps the layout readable on narrow screens."""
+    return {"inline_keyboard": [[
+        {"text": "✅ Done", "callback_data": f"done:{action_id}"},
+        {"text": "🌙 Snooze", "callback_data": f"snooze:{action_id}"},
+        {"text": "🚫 Dismiss", "callback_data": f"dismiss:{action_id}"},
+    ], [
+        {"text": "✏️ Draft reply", "callback_data": f"draft:{uid}"},
+    ]]}

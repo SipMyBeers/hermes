@@ -1,5 +1,6 @@
 from hermes.telegram.keyboards import (
     actions_card, snooze_choices, approval_card, dashboard,
+    lead_card, urgent_card,
 )
 
 
@@ -49,7 +50,34 @@ def test_dashboard_has_actions_and_digest():
 def test_callback_data_under_64_bytes():
     """Telegram's hard limit is 64 bytes for callback_data — protect it."""
     for kb in (actions_card(999_999_999), snooze_choices(999_999_999),
-               approval_card(999_999_999), dashboard()):
+               approval_card(999_999_999), dashboard(),
+               lead_card(999_999_999),
+               urgent_card(999_999_999, 999_999_999)):
         for row in kb["inline_keyboard"]:
             for btn in row:
                 assert len(btn["callback_data"].encode()) <= 64, btn
+
+
+def test_lead_card_has_draft_button():
+    """Single-row card with one Draft-reply button bound to a uid."""
+    kb = lead_card(42)
+    rows = kb["inline_keyboard"]
+    assert len(rows) == 1
+    assert len(rows[0]) == 1
+    btn = rows[0][0]
+    assert "Draft" in btn["text"]
+    assert btn["callback_data"] == "draft:42"
+
+
+def test_urgent_card_has_action_row_and_draft_row():
+    """Two-row layout: action triad + Draft button. Action id and uid
+    bind to different parts of the payload (callback verbs)."""
+    kb = urgent_card(action_id=7, uid=100)
+    rows = kb["inline_keyboard"]
+    assert len(rows) == 2
+    # Row 1: Done / Snooze / Dismiss bound to action id.
+    cbs_row1 = [b["callback_data"] for b in rows[0]]
+    assert cbs_row1 == ["done:7", "snooze:7", "dismiss:7"]
+    # Row 2: single Draft button bound to message uid.
+    assert len(rows[1]) == 1
+    assert rows[1][0]["callback_data"] == "draft:100"

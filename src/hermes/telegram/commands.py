@@ -13,7 +13,7 @@ from hermes.config import Config
 from hermes.ingest.url import ingest, find_url, URL_RE  # noqa: F401  (URL_RE re-exported)
 from hermes.mail.smtp_client import SmtpSender, build_message
 from hermes.telegram.client import TelegramClient
-from hermes.telegram.keyboards import actions_card, snooze_choices
+from hermes.telegram.keyboards import actions_card, snooze_choices, approval_card
 
 HELP_TEXT = """*Hermes — your inbox + URL bot*
 
@@ -104,6 +104,7 @@ def handle_update(
         "/done": _cmd_done,
         "/dismiss": _cmd_dismiss,
         "/snooze": _cmd_snooze,
+        "/draft": _cmd_draft,
         "/start": _cmd_start,
         "/help": lambda *a: tg.send_message(HELP_TEXT),
     }
@@ -316,6 +317,101 @@ def _cmd_snooze(args, cfg, db, tg):
         tg.send_message(f"Nothing to snooze for action {aid}")
 
 
+def _cmd_draft(args, cfg, db, tg):
+    """Turn a stored email into a Send/Discard outbox card.
+
+    Lookup order:
+      1. messages.draft_text — populated by the daemon for client mail.
+      2. If empty, run drafter inline against persisted raw_email so the
+         user can /draft any reviewable message even if the daemon
+         skipped drafting (review/personal/other classes).
+
+    Resulting outbox row is rendered with approval_card(oid) so the user
+    sees the full body and the Send/Discard buttons. The DB write happens
+    BEFORE the Telegram send, so a Telegram outage doesn't lose the draft.
+    """
+    if not args:
+        tg.send_message("Usage: /draft <message_uid>")
+        return
+    try:
+        uid = int(args[0])
+    except ValueError:
+        tg.send_message("Message uid must be an integer")
+        return
+    row = db.execute(
+        "SELECT message_id, sender, subject, draft_text, raw_email "
+        "FROM messages WHERE uid=?",
+        (uid,),
+    ).fetchone()
+    if not row:
+        tg.send_message(f"No message found for uid={uid}")
+        return
+    message_id, sender, subject, draft_text, raw_email = row
+
+    # If no cached draft, generate one now via the existing drafter.
+    if not (draft_text or "").strip():
+        if not raw_email:
+            tg.send_message(
+                f"uid={uid} has no raw email persisted; can't draft."
+            )
+            return
+        from email import message_from_bytes
+        from hermes.classifier.drafter import draft_reply as _drafter
+        msg = message_from_bytes(raw_email)
+        # First name only — the prompt template signs off with this and
+        # 'Dylan Beers' as a closer reads stilted. Fall back to 'Hermes'
+        # if the user never set a name in secrets.toml.
+        sender_name = (
+            cfg.user.name.split()[0] if cfg.user.name else "Hermes"
+        )
+        draft_text = _drafter(msg, sender_name=sender_name)
+        if not draft_text.strip():
+            tg.send_message(
+                f"⚠ couldn't draft a reply for uid={uid} "
+                f"(Ollama returned empty)"
+            )
+            return
+        # Persist for next time so a re-run of /draft skips the LLM call.
+        db.execute(
+            "UPDATE messages SET draft_text=?, drafted_at=? WHERE uid=?",
+            (draft_text, datetime.now(timezone.utc).isoformat(), uid),
+        )
+
+    # Extract recipient address from the original sender header.
+    from email.utils import getaddresses
+    to_addr = (
+        getaddresses([sender or ""])[0][1] if sender else ""
+    ).strip()
+    if not to_addr:
+        tg.send_message(f"⚠ uid={uid} has no parseable sender address")
+        return
+
+    subj = (subject or "(no subject)").strip()
+    # Don't double-stack 'Re: Re: Re:' prefixes when replying to a
+    # message that was itself a reply.
+    if not subj.lower().startswith(("re:", "re :")):
+        subj = f"Re: {subj}"
+
+    cur = db.execute(
+        "INSERT INTO outbox(kind, related_uid, to_addr, subject, body, "
+        "status, created_at) "
+        "VALUES ('reply', ?, ?, ?, ?, 'queued', ?)",
+        (uid, to_addr, subj, draft_text,
+         datetime.now(timezone.utc).isoformat()),
+    )
+    oid = cur.lastrowid
+    # Body capped at 1500 chars in the preview so a runaway draft doesn't
+    # exceed Telegram's 4096-char message limit; the full body is in DB
+    # for the actual send.
+    tg.send_message(
+        f"✏️ *Draft reply* (#{oid})\n"
+        f"To: {to_addr}\n"
+        f"Subject: {subj}\n\n"
+        f"{draft_text[:1500]}",
+        reply_markup=approval_card(oid),
+    )
+
+
 def handle_callback(
     update: dict,
     cfg: Config,
@@ -416,6 +512,15 @@ def handle_callback(
         elif verb == "digest":
             tg.answer_callback_query(callback_id, "")
             _cmd_digest([], cfg, db, tg)
+        elif verb == "draft" and len(parts) >= 2:
+            uid = int(parts[1])
+            # Flash before the LLM call so the user sees instant feedback;
+            # generation can take a few seconds when the cache is cold.
+            tg.answer_callback_query(callback_id, "drafting…")
+            try:
+                _cmd_draft([str(uid)], cfg, db, tg)
+            except Exception as e:
+                tg.send_message(f"⚠ draft failed: {e}")
         else:
             tg.answer_callback_query(callback_id, "?")
     except Exception as e:

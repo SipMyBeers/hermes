@@ -339,3 +339,190 @@ def test_snooze_with_unparseable_when(tmp_path):
     row = db.execute("SELECT status FROM actions WHERE id=?", (ids[0],)).fetchone()
     assert row[0] == "open"  # untouched
     assert "Couldn't parse" in tg.send_message.call_args.args[0]
+
+
+# ---------- /draft -----------------------------------------------------------
+
+
+def _seed_message(db, *, uid: int, sender: str = "Casey <casey@x.com>",
+                  subject: str = "Project inquiry",
+                  draft_text: str | None = None,
+                  raw_email: bytes | None = None) -> None:
+    """Helper: insert a messages row for /draft to operate on."""
+    from datetime import datetime, timezone
+    db.execute(
+        "INSERT INTO messages(uid, message_id, received_at, sender, subject, "
+        "classification, classifier, draft_text, raw_email) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (uid, f"m-{uid}",
+         datetime.now(timezone.utc).isoformat(),
+         sender, subject, "client", "rule",
+         draft_text, raw_email),
+    )
+
+
+def test_draft_uses_cached_draft_text(tmp_path):
+    """When messages.draft_text is already populated, /draft skips the
+    LLM and queues the cached body straight to outbox."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    _seed_message(db, uid=42, draft_text="Already drafted reply.")
+    tg = MagicMock()
+    update = {"update_id": 300, "message": {"chat": {"id": 42},
+              "text": "/draft 42"}}
+    handle_update(update, _cfg(), db, tg)
+    rows = list(db.execute(
+        "SELECT kind, related_uid, to_addr, subject, body, status FROM outbox"
+    ))
+    assert len(rows) == 1
+    kind, related_uid, to_addr, subject, body, status = rows[0]
+    assert kind == "reply"
+    assert related_uid == 42
+    assert to_addr == "casey@x.com"
+    assert subject == "Re: Project inquiry"
+    assert body == "Already drafted reply."
+    assert status == "queued"
+    # The user-facing card carries an approval_card keyboard.
+    last = tg.send_message.call_args
+    kb = last.kwargs.get("reply_markup")
+    assert kb is not None
+    cbs = [b["callback_data"] for r in kb["inline_keyboard"] for b in r]
+    assert any(cb.startswith("approve:") for cb in cbs)
+    assert any(cb.startswith("reject:") for cb in cbs)
+
+
+def test_draft_generates_when_no_cache(tmp_path, monkeypatch):
+    """No cached draft_text but raw_email present → run drafter, persist
+    the result, queue outbox."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    raw = (
+        b"From: Casey <casey@x.com>\r\n"
+        b"To: u@g.com\r\n"
+        b"Subject: Project inquiry\r\n"
+        b"\r\n"
+        b"Original body.\r\n"
+    )
+    _seed_message(db, uid=43, draft_text=None, raw_email=raw)
+
+    captured = {}
+
+    def fake_drafter(msg, sender_name="Hermes", **kwargs):
+        captured["sender_name"] = sender_name
+        captured["from_"] = str(msg.get("From", ""))
+        return "fresh draft body"
+
+    # Patched at the import site _cmd_draft uses (local import).
+    monkeypatch.setattr(
+        "hermes.classifier.drafter.draft_reply", fake_drafter
+    )
+    tg = MagicMock()
+    update = {"update_id": 301, "message": {"chat": {"id": 42},
+              "text": "/draft 43"}}
+    handle_update(update, _cfg(), db, tg)
+    # Outbox queued with the freshly drafted body.
+    out = db.execute(
+        "SELECT body, related_uid FROM outbox WHERE related_uid=43"
+    ).fetchone()
+    assert out is not None
+    assert out[0] == "fresh draft body"
+    # Cache populated for the next /draft on the same uid.
+    cached = db.execute(
+        "SELECT draft_text, drafted_at FROM messages WHERE uid=43"
+    ).fetchone()
+    assert cached[0] == "fresh draft body"
+    assert cached[1] is not None
+    # Drafter was actually called with the right inputs.
+    assert "Casey" in captured["from_"]
+
+
+def test_draft_no_message_says_so(tmp_path):
+    """/draft on a uid that doesn't exist gets a friendly 'not found'
+    instead of a stack trace."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    tg = MagicMock()
+    update = {"update_id": 302, "message": {"chat": {"id": 42},
+              "text": "/draft 999"}}
+    handle_update(update, _cfg(), db, tg)
+    rows = list(db.execute("SELECT COUNT(*) FROM outbox"))
+    assert rows[0][0] == 0
+    text = tg.send_message.call_args.args[0]
+    assert "No message found" in text
+
+
+def test_draft_unparseable_sender(tmp_path):
+    """Empty/malformed From header → friendly error, no outbox row."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    _seed_message(db, uid=44, sender="", draft_text="ready to send")
+    tg = MagicMock()
+    update = {"update_id": 303, "message": {"chat": {"id": 42},
+              "text": "/draft 44"}}
+    handle_update(update, _cfg(), db, tg)
+    rows = list(db.execute("SELECT COUNT(*) FROM outbox"))
+    assert rows[0][0] == 0
+    text = tg.send_message.call_args.args[0]
+    assert "no parseable sender" in text
+
+
+def test_draft_drafter_returns_empty(tmp_path, monkeypatch):
+    """LLM returned an empty string (Ollama down or refused) → friendly
+    error, NO outbox row, NO cached draft."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    raw = (
+        b"From: Casey <casey@x.com>\r\n"
+        b"Subject: x\r\n"
+        b"\r\n"
+        b"body\r\n"
+    )
+    _seed_message(db, uid=45, draft_text=None, raw_email=raw)
+    monkeypatch.setattr(
+        "hermes.classifier.drafter.draft_reply",
+        lambda msg, sender_name="Hermes", **kwargs: "",
+    )
+    tg = MagicMock()
+    update = {"update_id": 304, "message": {"chat": {"id": 42},
+              "text": "/draft 45"}}
+    handle_update(update, _cfg(), db, tg)
+    rows = list(db.execute("SELECT COUNT(*) FROM outbox"))
+    assert rows[0][0] == 0
+    cached = db.execute(
+        "SELECT draft_text FROM messages WHERE uid=45"
+    ).fetchone()
+    assert cached[0] is None
+    text = tg.send_message.call_args.args[0]
+    assert "couldn't draft" in text
+
+
+def test_draft_does_not_double_re_prefix(tmp_path):
+    """Subject already prefixed with 'Re:' must not stack into 'Re: Re: ...'."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    _seed_message(db, uid=46, subject="Re: original thread",
+                  draft_text="ack")
+    tg = MagicMock()
+    update = {"update_id": 305, "message": {"chat": {"id": 42},
+              "text": "/draft 46"}}
+    handle_update(update, _cfg(), db, tg)
+    out = db.execute(
+        "SELECT subject FROM outbox WHERE related_uid=46"
+    ).fetchone()
+    assert out[0] == "Re: original thread"
+
+
+def test_draft_no_raw_email_no_cache_says_so(tmp_path):
+    """No cached draft AND no raw_email → can't generate, friendly error."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    _seed_message(db, uid=47, draft_text=None, raw_email=None)
+    tg = MagicMock()
+    update = {"update_id": 306, "message": {"chat": {"id": 42},
+              "text": "/draft 47"}}
+    handle_update(update, _cfg(), db, tg)
+    rows = list(db.execute("SELECT COUNT(*) FROM outbox"))
+    assert rows[0][0] == 0
+    text = tg.send_message.call_args.args[0]
+    assert "no raw email persisted" in text
+
+
+def test_draft_with_no_args_shows_usage(tmp_path):
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    tg = MagicMock()
+    update = {"update_id": 307, "message": {"chat": {"id": 42}, "text": "/draft"}}
+    handle_update(update, _cfg(), db, tg)
+    assert "Usage:" in tg.send_message.call_args.args[0]
