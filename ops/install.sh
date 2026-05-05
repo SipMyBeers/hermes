@@ -49,6 +49,14 @@ evening_report = false
 # When true, classified promos go to Gmail Trash (auto-purges in 30d).
 # When false, promos are archived (kept under "All Mail").
 delete_promos = true
+
+[user]
+# Your identity — used by Hermes' LLM enrichment to know who "you" are
+# versus the counterparty in inbound mail. Without this, gemma4 will
+# misattribute actions (e.g. "Reply to Dylan" when Dylan IS you).
+name = "Dylan Beers"
+entities = ["Beers Labs LLC", "Beers Capital LLC", "Ranger Beers", "Boarhog (client)"]
+role = "Founder; web dev / hosting services"
 EOF
   chmod 600 "${CFG_DIR}/secrets.toml"
   echo "    edit ${CFG_DIR}/secrets.toml then re-run this script"

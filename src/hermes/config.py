@@ -59,6 +59,15 @@ class MailConfig:
 
 
 @dataclass(frozen=True)
+class UserConfig:
+    """Identity context for the LLM. Populated from secrets.toml [user]
+    so gemma4 can disambiguate 'you' vs counterparty when reading email."""
+    name: str = ""                       # "Dylan Beers"
+    entities: tuple[str, ...] = ()       # ("Beers Labs LLC", "Beers Capital LLC", "Ranger Beers")
+    role: str = ""                       # "founder / web dev consultant"
+
+
+@dataclass(frozen=True)
 class IngestConfig:
     """URL ingestion (yt-dlp) auth config. Both fields optional; pick the one
     that works for your setup.
@@ -84,6 +93,7 @@ class Config:
     clients: Mapping[str, ClientConfig] = field(default_factory=lambda: MappingProxyType({}))
     mail: MailConfig = field(default_factory=MailConfig)
     ingest: IngestConfig = field(default_factory=IngestConfig)
+    user: UserConfig = field(default_factory=UserConfig)
 
 
 def _require_bool(value, *, key: str, source: str) -> bool:
@@ -181,6 +191,16 @@ def load_config(
     except (TypeError, AttributeError) as e:
         raise ConfigError(f"{secrets_path}: malformed [ingest] section - {e}") from e
 
+    try:
+        user_section = s.get("user", {})
+        user_cfg = UserConfig(
+            name=str(user_section.get("name", "")),
+            entities=tuple(str(e) for e in user_section.get("entities", [])),
+            role=str(user_section.get("role", "")),
+        )
+    except (TypeError, AttributeError) as e:
+        raise ConfigError(f"{secrets_path}: malformed [user] section - {e}") from e
+
     clients: dict[str, ClientConfig] = {}
     for key, body in c.items():
         try:
@@ -234,4 +254,5 @@ def load_config(
         clients=MappingProxyType(clients),
         mail=mail_cfg,
         ingest=ingest_cfg,
+        user=user_cfg,
     )

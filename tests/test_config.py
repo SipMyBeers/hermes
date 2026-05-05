@@ -1,6 +1,6 @@
 from pathlib import Path
 import pytest
-from hermes.config import load_config, Config, GmailConfig, TelegramConfig, ClientConfig, MailConfig
+from hermes.config import load_config, Config, GmailConfig, TelegramConfig, ClientConfig, MailConfig, UserConfig
 
 
 def test_load_config_full(tmp_path: Path):
@@ -219,6 +219,61 @@ delete_promos = "false"
     from hermes.config import ConfigError
     with pytest.raises(ConfigError, match="delete_promos"):
         load_config(secrets_path=secrets, clients_path=clients)
+
+
+def test_load_config_user_section_full(tmp_path: Path):
+    """[user] section round-trips name + entities + role."""
+    secrets = tmp_path / "secrets.toml"
+    secrets.write_text("""
+[gmail]
+imap_user = "u@g.com"
+imap_app_password = "x"
+smtp_user = "u@g.com"
+smtp_app_password = "x"
+from_address = "U <u@g.com>"
+reply_to = "U <u@g.com>"
+
+[telegram]
+bot_token = "1:A"
+chat_id = 0
+
+[user]
+name = "Dylan Beers"
+entities = ["Beers Labs LLC", "Beers Capital LLC", "Ranger Beers"]
+role = "founder / web dev consultant"
+""")
+    clients = tmp_path / "clients.toml"
+    clients.write_text("# empty")
+    cfg = load_config(secrets_path=secrets, clients_path=clients)
+    assert isinstance(cfg.user, UserConfig)
+    assert cfg.user.name == "Dylan Beers"
+    assert cfg.user.entities == ("Beers Labs LLC", "Beers Capital LLC", "Ranger Beers")
+    assert cfg.user.role == "founder / web dev consultant"
+
+
+def test_load_config_user_section_omitted_returns_empty_defaults(tmp_path: Path):
+    """No [user] section yields a UserConfig() with empty fields — never raises."""
+    secrets = tmp_path / "secrets.toml"
+    secrets.write_text("""
+[gmail]
+imap_user = "u@g.com"
+imap_app_password = "x"
+smtp_user = "u@g.com"
+smtp_app_password = "x"
+from_address = "U <u@g.com>"
+reply_to = "U <u@g.com>"
+
+[telegram]
+bot_token = "1:A"
+chat_id = 0
+""")
+    clients = tmp_path / "clients.toml"
+    clients.write_text("# empty")
+    cfg = load_config(secrets_path=secrets, clients_path=clients)
+    assert isinstance(cfg.user, UserConfig)
+    assert cfg.user.name == ""
+    assert cfg.user.entities == ()
+    assert cfg.user.role == ""
 
 
 def test_two_clients_loaded(tmp_path: Path):
