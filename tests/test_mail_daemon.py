@@ -286,6 +286,64 @@ def test_process_message_urgent_pings_telegram(tmp_path):
     assert "Production is down" in text
 
 
+def test_urgent_inbox_ping_includes_action_button(tmp_path):
+    """When actions were extracted, the urgent ping carries a Done/Snooze/
+    Dismiss inline keyboard wired to the first action's id."""
+    from hermes.db import connect, migrate
+    from hermes.digest.enrich import EmailBrief
+    db = connect(tmp_path / "t.sqlite")
+    migrate(db)
+    msg = message_from_bytes((FIXTURES / "client_boarhog.eml").read_bytes())
+    fake_imap = MagicMock()
+    fake_tg = MagicMock()
+    import hermes.mail.daemon as dmod
+    fake_brief = EmailBrief(
+        summary="Down.",
+        actions=("Rollback last deploy",),
+        tools=(),
+        importance="urgent",
+    )
+    dmod.summarize_for_brief = lambda *a, **kw: fake_brief
+    dmod._telegram = lambda cfg: fake_tg
+    process_message(uid=304, msg=msg, db=db, cfg=_cfg(), imap=fake_imap,
+                    llm_classifier=None, drafter=None)
+    urgent_calls = [c for c in fake_tg.send_message.call_args_list
+                    if "🔴" in c.args[0]]
+    assert len(urgent_calls) == 1
+    kb = urgent_calls[0].kwargs.get("reply_markup")
+    assert kb is not None
+    cbs = [b["callback_data"] for r in kb["inline_keyboard"] for b in r]
+    # First action id was inserted as the only row -> id 1.
+    aid = db.execute("SELECT id FROM actions").fetchone()[0]
+    assert f"done:{aid}" in cbs
+    assert f"snooze:{aid}" in cbs
+    assert f"dismiss:{aid}" in cbs
+
+
+def test_urgent_inbox_ping_without_actions_has_no_button(tmp_path):
+    """If the LLM returned a summary but zero actions, the urgent ping
+    still fires but without a keyboard (no id to bind to)."""
+    from hermes.db import connect, migrate
+    from hermes.digest.enrich import EmailBrief
+    db = connect(tmp_path / "t.sqlite")
+    migrate(db)
+    msg = message_from_bytes((FIXTURES / "client_boarhog.eml").read_bytes())
+    fake_imap = MagicMock()
+    fake_tg = MagicMock()
+    import hermes.mail.daemon as dmod
+    fake_brief = EmailBrief(
+        summary="Heads up — outage.", actions=(), tools=(), importance="urgent",
+    )
+    dmod.summarize_for_brief = lambda *a, **kw: fake_brief
+    dmod._telegram = lambda cfg: fake_tg
+    process_message(uid=305, msg=msg, db=db, cfg=_cfg(), imap=fake_imap,
+                    llm_classifier=None, drafter=None)
+    urgent_calls = [c for c in fake_tg.send_message.call_args_list
+                    if "🔴" in c.args[0]]
+    assert len(urgent_calls) == 1
+    assert urgent_calls[0].kwargs.get("reply_markup") is None
+
+
 def test_process_message_non_urgent_does_not_ping(tmp_path):
     """Non-urgent enrichments stay silent — only the morning brief surfaces them."""
     from hermes.db import connect, migrate

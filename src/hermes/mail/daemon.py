@@ -20,6 +20,7 @@ from hermes.digest.enrich import summarize_for_brief
 from hermes.extract.lead import detect_lead, LeadSignal
 from hermes.mail.imap_client import ImapClient
 from hermes.telegram.client import TelegramClient
+from hermes.telegram.keyboards import actions_card
 
 LLM_THRESHOLD = 0.75
 
@@ -186,13 +187,22 @@ def process_message(
             # these surfaced now, not buried in the morning brief.
             if brief.importance == "urgent" and brief.summary:
                 try:
-                    ids_str = ", ".join(f"#{i}" for i in new_ids) or "none"
-                    _telegram(cfg).send_message(
-                        f"🔴 *Urgent inbox*\nFrom: {sender}\n"
-                        f"Subject: {subject[:140]}\n"
-                        f"{brief.summary}\n\n"
-                        f"Open actions logged: {ids_str}"
+                    ping_text = (
+                        f"🔴 *Urgent inbox*\n"
+                        f"From: {sender}\n"
+                        f"Subject: {subject[:140]}\n\n"
+                        f"{brief.summary}"
                     )
+                    if new_ids:
+                        # Attach the first action's button row to the ping;
+                        # any sibling actions for the same email show up as
+                        # their own cards via /actions. One tap to close the
+                        # most-likely-relevant todo without typing an id.
+                        _telegram(cfg).send_message(
+                            ping_text, reply_markup=actions_card(new_ids[0])
+                        )
+                    else:
+                        _telegram(cfg).send_message(ping_text)
                 except Exception as e:
                     logger.warning("urgent ping failed: {}", e)
         except Exception as e:
@@ -212,6 +222,10 @@ def process_message(
                 logger.error("imap lead-label failed uid={} err={}", uid, e)
             try:
                 subj = subject[:140]
+                # TODO(phase-K.2): once /draft is wired, swap this plain
+                # text ping for a lead_card(uid) inline keyboard with
+                # 'Draft reply' + 'Dismiss' buttons. For now the slash
+                # commands stay so the user has a path forward.
                 _telegram(cfg).send_message(
                     f"🆕 *New lead*\n"
                     f"From: {lead.sender}\n"

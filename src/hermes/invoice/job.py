@@ -7,6 +7,7 @@ from hermes.config import load_config
 from hermes.db import connect, migrate
 from hermes.invoice.cli import build_invoice_for_client, _compose_email
 from hermes.telegram.client import TelegramClient
+from hermes.telegram.keyboards import approval_card
 
 
 def main() -> int:
@@ -55,8 +56,8 @@ def main() -> int:
             f"Client: {ctx.bill_to_company or ctx.client_name}\n"
             f"Amount: ${ctx.total_cents / 100:,.2f}\n"
             f"Due: {ctx.due_text or ctx.due_date}\n"
-            f"PDF: {pdf_path.name}\n\n"
-            f"`/approve {oid}` to send · `/reject {oid}` to discard"
+            f"PDF: {pdf_path.name}",
+            reply_markup=approval_card(oid),
         )
         try:
             tg.send_document(pdf_path, caption=f"Invoice {ctx.invoice_number}")
