@@ -210,7 +210,30 @@ def test_migrate_v4_to_v5_adds_actions_table(tmp_path: Path):
     )}
     assert "idx_actions_status_importance" in indexes
     assert "idx_actions_source" in indexes
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+    conn.close()
+
+
+def test_migrate_v5_to_v6_adds_learned_promos_table(tmp_path: Path):
+    """v5 -> v6 provisions the Phase L stage 2 learned_promos table additively."""
+    db_path = tmp_path / "t.sqlite"
+    conn = connect(db_path)
+    # Start at v5 by running migrate then forcing user_version back.
+    migrate(conn)
+    conn.execute("PRAGMA user_version = 5")
+    conn.execute("DROP TABLE IF EXISTS learned_promos")
+    # Now upgrade to v6.
+    migrate(conn)
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "learned_promos" in tables
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(learned_promos)").fetchall()]
+    assert {"sender_email", "sender_domain", "dismissed_count",
+            "first_dismissed_at", "last_dismissed_at"}.issubset(set(cols))
+    indexes = {row[0] for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='learned_promos'"
+    )}
+    assert "idx_learned_promos_domain" in indexes
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     conn.close()
 
 

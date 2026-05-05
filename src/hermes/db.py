@@ -2,7 +2,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # Note: databases migrated from a v0/initial install may still have the old
 # `idx_messages_received` single-column index hanging around alongside the
@@ -178,6 +178,23 @@ CREATE INDEX IF NOT EXISTS idx_actions_source
   ON actions(source_kind, source_id);
 """
 
+# Phase L stage 2: dismiss-learning loop. Every 🚫 Dismiss tap on an
+# email-source action records the sender. Senders accumulating dismiss
+# counts get auto-classified as promo on the next inbound mail
+# (PROMO_THRESHOLD lives in hermes.classifier.learned). Additive only —
+# no v5 tables touched.
+_SCHEMA_V6 = """
+CREATE TABLE IF NOT EXISTS learned_promos (
+  sender_email TEXT PRIMARY KEY,        -- lowercased full address: 'noreply@x.com'
+  sender_domain TEXT NOT NULL,          -- 'x.com'
+  dismissed_count INTEGER NOT NULL DEFAULT 1,
+  first_dismissed_at TEXT NOT NULL,
+  last_dismissed_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_learned_promos_domain ON learned_promos(sender_domain);
+"""
+
 
 def connect(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -217,4 +234,9 @@ def migrate(conn: sqlite3.Connection) -> None:
         # open-action log. Additive — source tables (messages, digestions)
         # are not touched.
         conn.executescript(_SCHEMA_V5)
+    if current < 6:
+        # v5 -> v6: provision the learned_promos feedback table for the
+        # Phase L stage 2 dismiss-learning loop. Additive — no v5 tables
+        # touched.
+        conn.executescript(_SCHEMA_V6)
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
