@@ -10,11 +10,13 @@ import sqlite3
 import time
 from typing import Callable
 from loguru import logger
+from hermes.actions.store import add_actions
 from hermes.config import Config, load_config
 from hermes.classifier.rules import classify as rule_classify, ClientHint
 from hermes.classifier.llm import classify_llm, LLMResult
 from hermes.classifier.drafter import draft_reply
 from hermes.db import connect, migrate
+from hermes.digest.enrich import summarize_for_brief
 from hermes.extract.lead import detect_lead, LeadSignal
 from hermes.mail.imap_client import ImapClient
 from hermes.telegram.client import TelegramClient
@@ -159,6 +161,42 @@ def process_message(
                 imap.archive(uid)
     except Exception as e:
         logger.error("imap label failed uid={} err={}", uid, e)
+
+    # Phase J.2: enrich worth-reading classes and persist actions to the
+    # cross-source action log. Wrapped so any failure leaves the messages
+    # row intact — the INSERT above already committed.
+    if classification.label in ("client", "review", "personal", "other"):
+        try:
+            brief = summarize_for_brief(msg, user=cfg.user)
+            new_ids: list[int] = []
+            if brief.actions:
+                # 'noise' importance maps to 'low' for the actions CHECK
+                # constraint (urgent|normal|low only).
+                imp = brief.importance if brief.importance != "noise" else "low"
+                new_ids = add_actions(
+                    db,
+                    source_kind="email",
+                    source_id=uid,
+                    texts=list(brief.actions),
+                    importance=imp,
+                    source_subject=subject,
+                    source_sender=sender,
+                )
+            # Real-time ping for urgent items — the user explicitly wants
+            # these surfaced now, not buried in the morning brief.
+            if brief.importance == "urgent" and brief.summary:
+                try:
+                    ids_str = ", ".join(f"#{i}" for i in new_ids) or "none"
+                    _telegram(cfg).send_message(
+                        f"🔴 *Urgent inbox*\nFrom: {sender}\n"
+                        f"Subject: {subject[:140]}\n"
+                        f"{brief.summary}\n\n"
+                        f"Open actions logged: {ids_str}"
+                    )
+                except Exception as e:
+                    logger.warning("urgent ping failed: {}", e)
+        except Exception as e:
+            logger.warning("enrichment + action persist failed for uid={}: {}", uid, e)
 
     # Lead detection runs alongside classification, not in place of it.
     # A message can be both classified as 'review' AND a lead — both labels apply.

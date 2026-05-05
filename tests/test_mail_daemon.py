@@ -211,6 +211,106 @@ def test_lead_detection_persists_and_pings(tmp_path):
     assert "unknown.io" in text
 
 
+def test_process_message_persists_actions_for_client(tmp_path):
+    """Client emails get enriched and any extracted actions land in the
+    actions table tied back to the message uid."""
+    from hermes.db import connect, migrate
+    from hermes.digest.enrich import EmailBrief
+    db = connect(tmp_path / "t.sqlite")
+    migrate(db)
+    msg = message_from_bytes((FIXTURES / "client_boarhog.eml").read_bytes())
+    fake_imap = MagicMock()
+    import hermes.mail.daemon as dmod
+    fake_brief = EmailBrief(
+        summary="Sam wants the renewal quote.",
+        actions=("Send renewal terms", "Generate invoice"),
+        tools=(),
+        importance="normal",
+    )
+    dmod.summarize_for_brief = lambda *a, **kw: fake_brief
+    dmod._telegram = lambda cfg: MagicMock()
+    process_message(uid=300, msg=msg, db=db, cfg=_cfg(), imap=fake_imap,
+                    llm_classifier=None, drafter=None)
+    rows = list(db.execute(
+        "SELECT source_kind, source_id, text, importance, status FROM actions"
+    ))
+    assert len(rows) == 2
+    assert rows[0] == ("email", 300, "Send renewal terms", "normal", "open")
+    assert rows[1] == ("email", 300, "Generate invoice", "normal", "open")
+
+
+def test_process_message_skips_action_persist_for_promo(tmp_path):
+    """Promos must not be enriched — saves an LLM call and avoids polluting
+    the action log with junk-mail noise."""
+    from hermes.db import connect, migrate
+    db = connect(tmp_path / "t.sqlite")
+    migrate(db)
+    msg = message_from_bytes((FIXTURES / "promo_amazon.eml").read_bytes())
+    fake_imap = MagicMock()
+    import hermes.mail.daemon as dmod
+    enrich_calls = []
+    dmod.summarize_for_brief = lambda *a, **kw: enrich_calls.append(a) or None
+    process_message(uid=301, msg=msg, db=db, cfg=_cfg(), imap=fake_imap,
+                    llm_classifier=None, drafter=None)
+    assert enrich_calls == []
+    rows = list(db.execute("SELECT COUNT(*) FROM actions"))
+    assert rows[0][0] == 0
+
+
+def test_process_message_urgent_pings_telegram(tmp_path):
+    """importance='urgent' triggers an inline 🔴 ping with the summary."""
+    from hermes.db import connect, migrate
+    from hermes.digest.enrich import EmailBrief
+    db = connect(tmp_path / "t.sqlite")
+    migrate(db)
+    msg = message_from_bytes((FIXTURES / "client_boarhog.eml").read_bytes())
+    fake_imap = MagicMock()
+    fake_tg = MagicMock()
+    import hermes.mail.daemon as dmod
+    fake_brief = EmailBrief(
+        summary="Production is down — rollback now.",
+        actions=("Rollback last deploy",),
+        tools=(),
+        importance="urgent",
+    )
+    dmod.summarize_for_brief = lambda *a, **kw: fake_brief
+    dmod._telegram = lambda cfg: fake_tg
+    process_message(uid=302, msg=msg, db=db, cfg=_cfg(), imap=fake_imap,
+                    llm_classifier=None, drafter=None)
+    # At least one send_message call with the urgent badge.
+    urgent_calls = [c for c in fake_tg.send_message.call_args_list
+                    if "🔴" in c.args[0]]
+    assert len(urgent_calls) == 1
+    text = urgent_calls[0].args[0]
+    assert "Urgent inbox" in text
+    assert "Production is down" in text
+
+
+def test_process_message_non_urgent_does_not_ping(tmp_path):
+    """Non-urgent enrichments stay silent — only the morning brief surfaces them."""
+    from hermes.db import connect, migrate
+    from hermes.digest.enrich import EmailBrief
+    db = connect(tmp_path / "t.sqlite")
+    migrate(db)
+    msg = message_from_bytes((FIXTURES / "client_boarhog.eml").read_bytes())
+    fake_imap = MagicMock()
+    fake_tg = MagicMock()
+    import hermes.mail.daemon as dmod
+    fake_brief = EmailBrief(
+        summary="Routine check-in.", actions=(), tools=(),
+        importance="normal",
+    )
+    dmod.summarize_for_brief = lambda *a, **kw: fake_brief
+    dmod._telegram = lambda cfg: fake_tg
+    process_message(uid=303, msg=msg, db=db, cfg=_cfg(), imap=fake_imap,
+                    llm_classifier=None, drafter=None)
+    # The lead-detect path is the only thing that pings for known-client
+    # emails, and known-client emails don't trigger it. So no calls.
+    urgent_calls = [c for c in fake_tg.send_message.call_args_list
+                    if "🔴" in c.args[0]]
+    assert urgent_calls == []
+
+
 def test_known_client_does_not_get_lead_label(tmp_path):
     """A message from a known client domain must not be flagged as a lead."""
     from hermes.db import connect, migrate
