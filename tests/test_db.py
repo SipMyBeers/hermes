@@ -184,7 +184,33 @@ def test_migrate_v3_to_v4_adds_digestions_table(tmp_path: Path):
         "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='digestions'"
     )}
     assert "idx_digestions_ingested" in indexes
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
+    # migrate() always lands at SCHEMA_VERSION; the v4 step ran along the way.
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+    conn.close()
+
+
+def test_migrate_v4_to_v5_adds_actions_table(tmp_path: Path):
+    """v4 -> v5 provisions the Phase J.2 actions table additively."""
+    db_path = tmp_path / "t.sqlite"
+    conn = connect(db_path)
+    # Start at v4 by running migrate then forcing user_version back.
+    migrate(conn)
+    conn.execute("PRAGMA user_version = 4")
+    conn.execute("DROP TABLE IF EXISTS actions")
+    # Now upgrade to v5.
+    migrate(conn)
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "actions" in tables
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(actions)").fetchall()]
+    assert {"id", "source_kind", "source_id", "text", "importance", "status",
+            "due_at", "snoozed_until", "created_at", "done_at",
+            "source_subject", "source_sender"}.issubset(set(cols))
+    indexes = {row[0] for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='actions'"
+    )}
+    assert "idx_actions_status_importance" in indexes
+    assert "idx_actions_source" in indexes
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 5
     conn.close()
 
 

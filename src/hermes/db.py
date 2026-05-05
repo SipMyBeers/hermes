@@ -2,7 +2,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # Note: databases migrated from a v0/initial install may still have the old
 # `idx_messages_received` single-column index hanging around alongside the
@@ -148,6 +148,36 @@ CREATE TABLE IF NOT EXISTS digestions (
 CREATE INDEX IF NOT EXISTS idx_digestions_ingested ON digestions(ingested_at);
 """
 
+# Phase J.2: cross-source open-action log. Email enrichment and URL ingest
+# both extract action items today, but they live trapped inside their source
+# rows. The actions table promotes those into a single queryable workflow
+# surface — one place to see "what do I need to do today" with /actions,
+# /done, /dismiss, /snooze. Source rows stay immutable; this is the mutable
+# layer.
+_SCHEMA_V5 = """
+CREATE TABLE IF NOT EXISTS actions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_kind TEXT NOT NULL CHECK (source_kind IN ('email','digestion','manual')),
+  source_id INTEGER,                   -- messages.uid or digestions.id; NULL for manual
+  text TEXT NOT NULL,
+  importance TEXT NOT NULL DEFAULT 'normal'
+    CHECK (importance IN ('urgent','normal','low')),
+  status TEXT NOT NULL DEFAULT 'open'
+    CHECK (status IN ('open','done','dismissed','snoozed','stale')),
+  due_at TEXT,                         -- ISO 8601, optional
+  snoozed_until TEXT,                  -- ISO 8601, only set when status='snoozed'
+  created_at TEXT NOT NULL,
+  done_at TEXT,
+  source_subject TEXT,                 -- denormalized snapshot for /actions display
+  source_sender TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_actions_status_importance
+  ON actions(status, importance, created_at);
+CREATE INDEX IF NOT EXISTS idx_actions_source
+  ON actions(source_kind, source_id);
+"""
+
 
 def connect(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -182,4 +212,9 @@ def migrate(conn: sqlite3.Connection) -> None:
         # v3 -> v4: provision Phase G URL ingestion table (digestions).
         # Additive — no v1/v2/v3 tables touched.
         conn.executescript(_SCHEMA_V4)
+    if current < 5:
+        # v4 -> v5: provision Phase J.2 actions table for the cross-source
+        # open-action log. Additive — source tables (messages, digestions)
+        # are not touched.
+        conn.executescript(_SCHEMA_V5)
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
