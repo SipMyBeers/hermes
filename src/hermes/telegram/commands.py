@@ -399,7 +399,21 @@ def _cmd_draft(args, cfg, db, tg):
         sender_name = (
             cfg.user.name.split()[0] if cfg.user.name else "Hermes"
         )
-        draft_text = _drafter(msg, sender_name=sender_name)
+        # Phase N.3: pass availability.toml when present so the drafter
+        # can detect meeting-intent and weave 3 proposed slots into the
+        # reply. Resolved relative to the repo root the same way
+        # config._default_clients_path does — works for editable
+        # installs (uv sync --package=true). Set to None when missing
+        # so drafter cleanly skips calendar-aware mode.
+        availability = (
+            Path(__file__).resolve().parent.parent.parent.parent
+            / "availability.toml"
+        )
+        draft_text = _drafter(
+            msg,
+            sender_name=sender_name,
+            availability_path=availability if availability.exists() else None,
+        )
         if not draft_text.strip():
             tg.send_message(
                 f"⚠ couldn't draft a reply for uid={uid} "
