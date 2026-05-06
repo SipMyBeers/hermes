@@ -237,6 +237,101 @@ def test_migrate_v5_to_v6_adds_learned_promos_table(tmp_path: Path):
     conn.close()
 
 
+def test_migrate_v6_to_v7_widens_source_kind_check(tmp_path: Path):
+    """v6 -> v7 widens actions.source_kind CHECK to allow 'feed_item'.
+
+    Build a v6-shaped DB with the original 3-kind CHECK and a pre-existing
+    row, then run migrate(). The migration must (a) preserve the existing
+    row, (b) accept new INSERTs with source_kind='feed_item', and
+    (c) leave the original 'email' kind still valid.
+    """
+    db_path = tmp_path / "t.sqlite"
+    conn = connect(db_path)
+    # Simulate a v6 DB: same schema as v5 but BEFORE the v7 widening — the
+    # CHECK only knows about 'email','digestion','manual'.
+    conn.executescript("""
+    CREATE TABLE actions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      source_kind TEXT NOT NULL CHECK (source_kind IN ('email','digestion','manual')),
+      source_id INTEGER,
+      text TEXT NOT NULL,
+      importance TEXT NOT NULL DEFAULT 'normal'
+        CHECK (importance IN ('urgent','normal','low')),
+      status TEXT NOT NULL DEFAULT 'open'
+        CHECK (status IN ('open','done','dismissed','snoozed','stale')),
+      due_at TEXT,
+      snoozed_until TEXT,
+      created_at TEXT NOT NULL,
+      done_at TEXT,
+      source_subject TEXT,
+      source_sender TEXT
+    );
+    """)
+    # Sentinel row: must survive migration.
+    conn.execute(
+        "INSERT INTO actions(source_kind, source_id, text, created_at) "
+        "VALUES ('email', 42, 'reply to casey', '2026-05-02T00:00:00')"
+    )
+    conn.execute("PRAGMA user_version = 6")
+    conn.close()
+
+    # Pre-condition: feed_item is NOT yet accepted by the v6 CHECK.
+    conn = connect(db_path)
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO actions(source_kind, source_id, text, created_at) "
+            "VALUES ('feed_item', 1, 'read article', '2026-05-02T01:00:00')"
+        )
+    conn.close()
+
+    # Migrate to v7.
+    conn2 = connect(db_path)
+    migrate(conn2)
+
+    # Sentinel survived.
+    surviving = conn2.execute(
+        "SELECT source_kind, text FROM actions WHERE source_id=42"
+    ).fetchone()
+    assert surviving == ("email", "reply to casey")
+
+    # feed_item is now accepted.
+    conn2.execute(
+        "INSERT INTO actions(source_kind, source_id, text, created_at) "
+        "VALUES ('feed_item', 1, 'read article', '2026-05-02T01:00:00')"
+    )
+    row = conn2.execute(
+        "SELECT source_kind FROM actions WHERE source_kind='feed_item'"
+    ).fetchone()
+    assert row[0] == "feed_item"
+
+    # Original kinds still accepted.
+    conn2.execute(
+        "INSERT INTO actions(source_kind, source_id, text, created_at) "
+        "VALUES ('digestion', 9, 'skim', '2026-05-02T02:00:00')"
+    )
+
+    # Garbage source_kind still rejected by the new CHECK.
+    with pytest.raises(sqlite3.IntegrityError):
+        conn2.execute(
+            "INSERT INTO actions(source_kind, source_id, text, created_at) "
+            "VALUES ('garbage', 1, 'x', '2026-05-02')"
+        )
+
+    # Indexes preserved.
+    indexes = {row[0] for row in conn2.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='actions'"
+    )}
+    assert "idx_actions_status_importance" in indexes
+    assert "idx_actions_source" in indexes
+
+    assert conn2.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+
+    # Re-running migrate is a no-op (idempotency).
+    migrate(conn2)
+    assert conn2.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+    conn2.close()
+
+
 def test_messages_can_store_raw_email_blob(tmp_path: Path):
     conn = connect(tmp_path / "t.sqlite")
     migrate(conn)

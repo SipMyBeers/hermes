@@ -2,7 +2,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 # Note: databases migrated from a v0/initial install may still have the old
 # `idx_messages_received` single-column index hanging around alongside the
@@ -196,6 +196,49 @@ CREATE INDEX IF NOT EXISTS idx_learned_promos_domain ON learned_promos(sender_do
 """
 
 
+def _migrate_v7(conn: sqlite3.Connection) -> None:
+    """Phase M.2: widen actions.source_kind CHECK to include 'feed_item'.
+
+    SQLite can't ALTER a CHECK constraint in place, so we rename, recreate
+    with the wider CHECK, copy rows back, and drop the old. Wrapped in
+    BEGIN/COMMIT for atomicity. Idempotent — if 'feed_item' already appears
+    in the existing CREATE statement we no-op.
+    """
+    schema_row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='actions'"
+    ).fetchone()
+    existing = schema_row[0] if schema_row else ""
+    if "'feed_item'" in existing:
+        return  # already migrated
+    conn.executescript("""
+        BEGIN;
+        ALTER TABLE actions RENAME TO actions_v6;
+        CREATE TABLE actions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          source_kind TEXT NOT NULL CHECK (source_kind IN ('email','digestion','manual','feed_item')),
+          source_id INTEGER,
+          text TEXT NOT NULL,
+          importance TEXT NOT NULL DEFAULT 'normal'
+            CHECK (importance IN ('urgent','normal','low')),
+          status TEXT NOT NULL DEFAULT 'open'
+            CHECK (status IN ('open','done','dismissed','snoozed','stale')),
+          due_at TEXT,
+          snoozed_until TEXT,
+          created_at TEXT NOT NULL,
+          done_at TEXT,
+          source_subject TEXT,
+          source_sender TEXT
+        );
+        INSERT INTO actions SELECT * FROM actions_v6;
+        DROP TABLE actions_v6;
+        CREATE INDEX IF NOT EXISTS idx_actions_status_importance
+          ON actions(status, importance, created_at);
+        CREATE INDEX IF NOT EXISTS idx_actions_source
+          ON actions(source_kind, source_id);
+        COMMIT;
+    """)
+
+
 def connect(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path, isolation_level=None)  # autocommit
@@ -239,4 +282,9 @@ def migrate(conn: sqlite3.Connection) -> None:
         # Phase L stage 2 dismiss-learning loop. Additive — no v5 tables
         # touched.
         conn.executescript(_SCHEMA_V6)
+    if current < 7:
+        # v6 -> v7: widen actions.source_kind CHECK to allow 'feed_item'
+        # for Phase M.2 content rounds. Recreates the actions table because
+        # SQLite can't ALTER a CHECK constraint in place.
+        _migrate_v7(conn)
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
