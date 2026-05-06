@@ -3,6 +3,7 @@ from hermes.db import connect, migrate
 from hermes.actions.store import (
     add_actions, list_open, count_open, mark_done, dismiss, snooze,
     expire_snoozed, decay_stale, parse_when,
+    add_or_consolidate_email_action,
 )
 
 
@@ -178,6 +179,184 @@ def test_parse_when_unparseable():
     assert parse_when("fubar") is None
     assert parse_when("") is None
     assert parse_when("   ") is None
+
+
+def test_consolidate_first_action_inserts(tmp_path):
+    """First call with a fresh thread_key inserts a brand-new actions row."""
+    db = _db(tmp_path)
+    aid, was_new = add_or_consolidate_email_action(
+        db,
+        thread_key="root@x.com",
+        source_id=10,
+        text="Reply to Joseph",
+        importance="normal",
+        source_subject="Project sync",
+        source_sender="joseph@x.com",
+    )
+    assert was_new is True
+    assert aid > 0
+    row = db.execute(
+        "SELECT thread_key, thread_count, source_id, status FROM actions WHERE id=?",
+        (aid,),
+    ).fetchone()
+    assert row == ("root@x.com", 1, 10, "open")
+
+
+def test_consolidate_second_action_same_thread_updates(tmp_path):
+    """Second call with the same thread_key bumps thread_count, retargets
+    source_id to the new uid, and returns (existing_id, False)."""
+    db = _db(tmp_path)
+    first_id, _ = add_or_consolidate_email_action(
+        db, thread_key="root@x.com", source_id=10,
+        text="Reply to Joseph", importance="normal",
+        source_subject="Project sync", source_sender="joseph@x.com",
+    )
+    second_id, was_new = add_or_consolidate_email_action(
+        db, thread_key="root@x.com", source_id=11,
+        text="Reply to Joseph", importance="normal",
+        source_subject="Re: Project sync", source_sender="joseph@x.com",
+    )
+    assert was_new is False
+    assert second_id == first_id
+    row = db.execute(
+        "SELECT thread_count, source_id, source_subject FROM actions WHERE id=?",
+        (first_id,),
+    ).fetchone()
+    assert row == (2, 11, "Re: Project sync")
+    # Still exactly one row.
+    n = db.execute("SELECT COUNT(*) FROM actions").fetchone()[0]
+    assert n == 1
+
+
+def test_consolidate_different_threads_insert_separately(tmp_path):
+    """Different thread_keys never consolidate — two rows, one each."""
+    db = _db(tmp_path)
+    a, _ = add_or_consolidate_email_action(
+        db, thread_key="thread-a@x.com", source_id=20,
+        text="Action A", importance="normal",
+    )
+    b, _ = add_or_consolidate_email_action(
+        db, thread_key="thread-b@x.com", source_id=21,
+        text="Action B", importance="normal",
+    )
+    assert a != b
+    n = db.execute("SELECT COUNT(*) FROM actions").fetchone()[0]
+    assert n == 2
+
+
+def test_consolidate_does_not_downgrade_urgency(tmp_path):
+    """Once a thread is urgent, a follow-up normal message must NOT
+    downgrade it. Urgency is monotonic upward."""
+    db = _db(tmp_path)
+    aid, _ = add_or_consolidate_email_action(
+        db, thread_key="root@x.com", source_id=30,
+        text="Site is down", importance="urgent",
+    )
+    add_or_consolidate_email_action(
+        db, thread_key="root@x.com", source_id=31,
+        text="Site is down", importance="normal",
+    )
+    row = db.execute(
+        "SELECT importance, thread_count FROM actions WHERE id=?", (aid,)
+    ).fetchone()
+    assert row == ("urgent", 2)
+
+
+def test_consolidate_promotes_to_urgent_on_escalation(tmp_path):
+    """A normal thread can still be promoted to urgent if a later reply
+    escalates the importance."""
+    db = _db(tmp_path)
+    aid, _ = add_or_consolidate_email_action(
+        db, thread_key="root@x.com", source_id=40,
+        text="Reply", importance="normal",
+    )
+    add_or_consolidate_email_action(
+        db, thread_key="root@x.com", source_id=41,
+        text="Reply", importance="urgent",
+    )
+    row = db.execute(
+        "SELECT importance, thread_count FROM actions WHERE id=?", (aid,)
+    ).fetchone()
+    assert row == ("urgent", 2)
+
+
+def test_consolidate_skips_done_thread(tmp_path):
+    """A new reply on a done/dismissed thread must start a fresh action,
+    not silently revive the closed one — otherwise the user never sees
+    the reply because the row is already closed."""
+    db = _db(tmp_path)
+    first_id, _ = add_or_consolidate_email_action(
+        db, thread_key="root@x.com", source_id=50,
+        text="Reply", importance="normal",
+    )
+    mark_done(db, first_id)
+    second_id, was_new = add_or_consolidate_email_action(
+        db, thread_key="root@x.com", source_id=51,
+        text="Reply", importance="normal",
+    )
+    assert was_new is True
+    assert second_id != first_id
+    # First row stays done; second row is open with thread_count=1.
+    rows = dict(db.execute(
+        "SELECT id, status FROM actions"
+    ).fetchall())
+    assert rows[first_id] == "done"
+    assert rows[second_id] == "open"
+    second_count = db.execute(
+        "SELECT thread_count FROM actions WHERE id=?", (second_id,)
+    ).fetchone()[0]
+    assert second_count == 1
+
+
+def test_consolidate_empty_thread_key_falls_through_to_insert(tmp_path):
+    """Empty thread_key never consolidates — every empty-key call inserts
+    a fresh row. Otherwise unrelated mail with no headers would all collapse
+    into a single ghost action."""
+    db = _db(tmp_path)
+    a, _ = add_or_consolidate_email_action(
+        db, thread_key="", source_id=60, text="A", importance="normal",
+    )
+    b, _ = add_or_consolidate_email_action(
+        db, thread_key="", source_id=61, text="B", importance="normal",
+    )
+    assert a != b
+    n = db.execute("SELECT COUNT(*) FROM actions").fetchone()[0]
+    assert n == 2
+
+
+def test_consolidate_skips_empty_text(tmp_path):
+    """Empty/whitespace text is a no-op returning (0, False) — matches
+    add_actions() behaviour so callers can iterate brief.actions without
+    a None check."""
+    db = _db(tmp_path)
+    aid, was_new = add_or_consolidate_email_action(
+        db, thread_key="root@x.com", source_id=70, text="   ",
+    )
+    assert (aid, was_new) == (0, False)
+    n = db.execute("SELECT COUNT(*) FROM actions").fetchone()[0]
+    assert n == 0
+
+
+def test_consolidate_includes_snoozed_in_lookup(tmp_path):
+    """A snoozed action is still 'open' for thread purposes — a new reply
+    on the same thread should bump its count, not start a parallel row."""
+    from datetime import datetime, timedelta, timezone
+    db = _db(tmp_path)
+    aid, _ = add_or_consolidate_email_action(
+        db, thread_key="root@x.com", source_id=80,
+        text="Reply", importance="normal",
+    )
+    snooze(db, aid, datetime.now(timezone.utc) + timedelta(days=2))
+    second_id, was_new = add_or_consolidate_email_action(
+        db, thread_key="root@x.com", source_id=81,
+        text="Reply", importance="normal",
+    )
+    assert was_new is False
+    assert second_id == aid
+    row = db.execute(
+        "SELECT thread_count FROM actions WHERE id=?", (aid,)
+    ).fetchone()
+    assert row[0] == 2
 
 
 def test_count_open(tmp_path):

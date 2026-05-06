@@ -27,6 +27,10 @@ class Action:
     done_at: str | None
     source_subject: str | None
     source_sender: str | None
+    # Phase N.1 thread consolidation. Defaults preserve back-compat for
+    # any callsite still constructing Action directly without these.
+    thread_count: int = 1
+    thread_key: str | None = None
 
 
 def add_actions(
@@ -58,6 +62,68 @@ def add_actions(
     return ids
 
 
+def add_or_consolidate_email_action(
+    db: sqlite3.Connection,
+    *,
+    thread_key: str,
+    source_id: int,                   # the new message's uid
+    text: str,
+    importance: str = "normal",
+    source_subject: str | None = None,
+    source_sender: str | None = None,
+) -> tuple[int, bool]:
+    """Phase N.1 thread-aware insert.
+
+    If an open (or snoozed) email-source action already exists for this
+    thread_key, bump its thread_count, point source_id at the latest uid,
+    refresh subject/sender snapshots, and return (existing_id, False).
+    Otherwise insert a new row with thread_count=1 and return (new_id, True).
+
+    Behaviour notes:
+      - Done / dismissed threads are NOT consolidated — a new reply on a
+        closed thread starts a fresh action so the user actually sees it.
+      - Importance is monotonic upward: once a thread is urgent, a follow-up
+        normal/low message can't downgrade it. A normal thread can still be
+        promoted to urgent if a later reply escalates.
+      - Empty thread_key always falls through to a fresh INSERT (we never
+        consolidate on the empty string — that would collapse unrelated mail).
+      - Empty text is a no-op returning (0, False), matching add_actions().
+    """
+    text = (text or "").strip()
+    if not text:
+        return (0, False)
+    if thread_key:
+        existing = db.execute(
+            "SELECT id, thread_count FROM actions "
+            "WHERE thread_key=? AND source_kind='email' "
+            "  AND status IN ('open','snoozed') "
+            "ORDER BY created_at DESC LIMIT 1",
+            (thread_key,),
+        ).fetchone()
+        if existing:
+            aid, count = existing
+            db.execute(
+                "UPDATE actions SET source_id=?, thread_count=?, "
+                "  source_subject=?, source_sender=?, "
+                "  importance=CASE WHEN importance='urgent' THEN importance ELSE ? END "
+                "WHERE id=?",
+                (source_id, int(count or 1) + 1, source_subject, source_sender,
+                 importance, aid),
+            )
+            return (aid, False)
+    # No prior thread row — insert fresh.
+    now = datetime.now(timezone.utc).isoformat()
+    cur = db.execute(
+        "INSERT INTO actions"
+        "(source_kind, source_id, text, importance, status, created_at,"
+        " source_subject, source_sender, thread_key, thread_count)"
+        " VALUES ('email', ?, ?, ?, 'open', ?, ?, ?, ?, 1)",
+        (source_id, text, importance, now,
+         source_subject, source_sender, thread_key or None),
+    )
+    return (cur.lastrowid, True)
+
+
 def list_open(
     db: sqlite3.Connection,
     *,
@@ -75,7 +141,8 @@ def list_open(
     rows = db.execute(
         f"SELECT id, source_kind, source_id, text, importance, status,"
         f" due_at, snoozed_until, created_at, done_at,"
-        f" source_subject, source_sender"
+        f" source_subject, source_sender,"
+        f" COALESCE(thread_count, 1), thread_key"
         f" FROM actions WHERE {where} "
         f"ORDER BY {rank}, created_at ASC LIMIT ?",
         (limit,),

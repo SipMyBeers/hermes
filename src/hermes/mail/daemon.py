@@ -10,7 +10,7 @@ import sqlite3
 import time
 from typing import Callable
 from loguru import logger
-from hermes.actions.store import add_actions
+from hermes.actions.store import add_actions, add_or_consolidate_email_action  # noqa: F401
 from hermes.config import Config, load_config
 from hermes.classifier.rules import classify as rule_classify, ClientHint
 from hermes.classifier.llm import classify_llm, LLMResult
@@ -204,15 +204,24 @@ def process_message(
                 # 'noise' importance maps to 'low' for the actions CHECK
                 # constraint (urgent|normal|low only).
                 imp = brief.importance if brief.importance != "noise" else "low"
-                new_ids = add_actions(
-                    db,
-                    source_kind="email",
-                    source_id=uid,
-                    texts=list(brief.actions),
-                    importance=imp,
-                    source_subject=subject,
-                    source_sender=sender,
-                )
+                # Phase N.1: every email action goes through the
+                # thread-aware consolidator. If a prior open action exists
+                # for the same thread_key, its thread_count is bumped and
+                # source_id repointed at this uid; otherwise a fresh row
+                # is inserted. Returning the action id either way so the
+                # urgent-ping keyboard still wires up correctly.
+                for action_text in brief.actions:
+                    aid, _was_new = add_or_consolidate_email_action(
+                        db,
+                        thread_key=tkey,
+                        source_id=uid,
+                        text=action_text,
+                        importance=imp,
+                        source_subject=subject,
+                        source_sender=sender,
+                    )
+                    if aid:
+                        new_ids.append(aid)
             # Real-time ping for urgent items — the user explicitly wants
             # these surfaced now, not buried in the morning brief.
             if brief.importance == "urgent" and brief.summary:

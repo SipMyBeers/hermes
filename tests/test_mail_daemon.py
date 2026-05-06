@@ -234,8 +234,14 @@ def test_lead_detection_persists_and_pings(tmp_path, monkeypatch):
 
 
 def test_process_message_persists_actions_for_client(tmp_path, monkeypatch):
-    """Client emails get enriched and any extracted actions land in the
-    actions table tied back to the message uid."""
+    """Client emails get enriched and any extracted action lands in the
+    actions table tied back to the message uid.
+
+    Phase N.1: when enrichment produces multiple action items for the SAME
+    inbound message, they consolidate by thread_key into a single row whose
+    text reflects the latest item and whose thread_count tracks the bumps.
+    The user gets one card 'Generate invoice (2 messages)' rather than two
+    separate cards for the same conversation."""
     from hermes.db import connect, migrate
     db = connect(tmp_path / "t.sqlite")
     migrate(db)
@@ -255,11 +261,12 @@ def test_process_message_persists_actions_for_client(tmp_path, monkeypatch):
     process_message(uid=300, msg=msg, db=db, cfg=_cfg(), imap=fake_imap,
                     llm_classifier=None, drafter=None)
     rows = list(db.execute(
-        "SELECT source_kind, source_id, text, importance, status FROM actions"
+        "SELECT source_kind, source_id, text, importance, status, thread_count "
+        "FROM actions"
     ))
-    assert len(rows) == 2
-    assert rows[0] == ("email", 300, "Send renewal terms", "normal", "open")
-    assert rows[1] == ("email", 300, "Generate invoice", "normal", "open")
+    # Two enrichment items collapsed into one consolidated row.
+    assert len(rows) == 1
+    assert rows[0] == ("email", 300, "Send renewal terms", "normal", "open", 2)
 
 
 def test_process_message_skips_action_persist_for_promo(tmp_path, monkeypatch):
@@ -456,6 +463,64 @@ def test_process_message_skips_receipt_for_non_transactional(tmp_path, monkeypat
     assert extract_calls == []
     rows = db.execute("SELECT COUNT(*) FROM ledger").fetchone()
     assert rows[0] == 0
+
+
+def test_process_message_two_replies_same_thread_consolidate(tmp_path, monkeypatch):
+    """Two messages with the same References root produce ONE actions row
+    with thread_count=2 — not two separate rows. This is the whole point
+    of Phase N.1: collapsing same-thread replies into one updating action
+    instead of three urgent pings + three /actions cards."""
+    from hermes.db import connect, migrate
+    db = connect(tmp_path / "t.sqlite")
+    migrate(db)
+    fake_brief = EmailBrief(
+        summary="Sam asked again.",
+        actions=("Reply to Sam",),
+        tools=(),
+        importance="normal",
+    )
+    monkeypatch.setattr(
+        "hermes.mail.daemon.summarize_for_brief",
+        lambda *a, **kw: fake_brief,
+    )
+    monkeypatch.setattr("hermes.mail.daemon._telegram", lambda cfg: MagicMock())
+    fake_imap = MagicMock()
+
+    def _raw(msg_id: str, in_reply_to: str | None) -> bytes:
+        text = (
+            "From: Sam Hogarth <sam@boarhog.example>\r\n"
+            "To: dz@gmail.com\r\n"
+            "Subject: Re: Quick question about hosting\r\n"
+            "Date: Fri, 02 May 2026 10:00:00 +0000\r\n"
+            f"Message-ID: <{msg_id}>\r\n"
+        )
+        if in_reply_to:
+            text += (
+                f"In-Reply-To: <{in_reply_to}>\r\n"
+                f"References: <root@boarhog.example> <{in_reply_to}>\r\n"
+            )
+        else:
+            text += "References: <root@boarhog.example>\r\n"
+        text += "\r\nbody\r\n"
+        return text.encode()
+
+    msg1 = message_from_bytes(_raw("reply1@boarhog.example", None))
+    msg2 = message_from_bytes(_raw("reply2@boarhog.example", "reply1@boarhog.example"))
+
+    process_message(uid=600, msg=msg1, db=db, cfg=_cfg(), imap=fake_imap,
+                    llm_classifier=None, drafter=None)
+    process_message(uid=601, msg=msg2, db=db, cfg=_cfg(), imap=fake_imap,
+                    llm_classifier=None, drafter=None)
+
+    rows = db.execute(
+        "SELECT id, thread_count, source_id, thread_key FROM actions"
+    ).fetchall()
+    assert len(rows) == 1
+    aid, count, src_id, tkey = rows[0]
+    assert count == 2
+    # source_id was repointed to the LATEST message uid.
+    assert src_id == 601
+    assert tkey == "root@boarhog.example"
 
 
 def test_process_message_persists_thread_key(tmp_path):
