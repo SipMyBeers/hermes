@@ -411,6 +411,39 @@ def test_digest_includes_open_actions_summary(tmp_path):
     assert "Reply to Sam" in text
 
 
+def test_morning_digest_shows_thread_count_in_top_urgent(tmp_path):
+    """An urgent thread-consolidated action prints '(N msgs)' next to its
+    summary line in the brief — the user sees that the rollback ask has
+    been hammered three times, not just once."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    from hermes.actions.store import add_or_consolidate_email_action
+    for src in (1, 2):
+        add_or_consolidate_email_action(
+            db, thread_key="root@x.com", source_id=src,
+            text="Rollback last deploy", importance="urgent",
+            source_sender="ops@x.com", source_subject="Re: outage",
+        )
+    text = build_morning_digest(db, _cfg(), enrich_one=_NO_ENRICH)
+    assert "Rollback last deploy" in text
+    assert "(2 msgs)" in text
+    assert "🔴" in text
+
+
+def test_morning_digest_omits_thread_count_for_single_message(tmp_path):
+    """A fresh single-reply action (count=1) prints no thread suffix in
+    the brief — keeps the line clean for typical mail."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    from hermes.actions.store import add_or_consolidate_email_action
+    add_or_consolidate_email_action(
+        db, thread_key="root@x.com", source_id=1,
+        text="Reply to Sam", importance="urgent",
+        source_sender="sam@x.com",
+    )
+    text = build_morning_digest(db, _cfg(), enrich_one=_NO_ENRICH)
+    assert "Reply to Sam" in text
+    assert "msgs)" not in text
+
+
 def test_digest_omits_open_actions_when_zero(tmp_path):
     """No open actions => no Open-actions header (don't pollute the brief
     with a 0-count ghost section)."""

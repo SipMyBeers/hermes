@@ -162,10 +162,16 @@ def build_morning_digest(
         # self-contained for the most pressing items.
         top = list_open(db, include_low=False, limit=3)
         for a in top:
+            # Phase N.1: thread-consolidated actions print '(N msgs)' so
+            # the brief reflects how many replies have piled up on the
+            # same conversation. Suppressed at count==1.
+            suffix = (
+                f" _({a.thread_count} msgs)_" if a.thread_count > 1 else ""
+            )
             if a.importance == "urgent":
-                lines.append(f"  🔴 *[{a.id}]* {a.text[:120]}")
+                lines.append(f"  🔴 *[{a.id}]* {a.text[:120]}{suffix}")
             else:
-                lines.append(f"  *[{a.id}]* {a.text[:120]}")
+                lines.append(f"  *[{a.id}]* {a.text[:120]}{suffix}")
 
     interesting = _interesting_messages(db, since_hours=24)
     if interesting:

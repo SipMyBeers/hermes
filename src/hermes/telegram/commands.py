@@ -266,9 +266,16 @@ def _cmd_actions(args, cfg, db, tg):
             tg.send_message(label)
             last_kind = a.source_kind
         badge = "🔴 " if a.importance == "urgent" else ""
+        # Phase N.1: surface the consolidated thread depth so a multi-reply
+        # conversation reads as 'Reply to Joseph (3 messages)' instead of
+        # three duplicate cards. Suppress the suffix at count==1 so we
+        # don't print '(1 messages)' on every fresh action.
+        count_suffix = (
+            f" _({a.thread_count} messages)_" if a.thread_count > 1 else ""
+        )
         ctx = f"\n_{a.source_subject[:80]}_" if a.source_subject else ""
         tg.send_message(
-            f"{badge}{a.text}{ctx}",
+            f"{badge}{a.text}{count_suffix}{ctx}",
             reply_markup=actions_card(a.id),
         )
 

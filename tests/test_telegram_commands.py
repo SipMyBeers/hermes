@@ -282,6 +282,51 @@ def test_actions_command_lists_open(tmp_path):
     assert seen_ids == set(ids)
 
 
+def test_actions_card_shows_thread_count_when_gt_one(tmp_path):
+    """A thread-consolidated action with count >1 surfaces '(N messages)'
+    in its card body so the user sees how many replies have piled up."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    from hermes.actions.store import add_or_consolidate_email_action
+    add_or_consolidate_email_action(
+        db, thread_key="root@x.com", source_id=1,
+        text="Reply to Joseph", importance="normal",
+        source_sender="joseph@x.com", source_subject="Project sync",
+    )
+    add_or_consolidate_email_action(
+        db, thread_key="root@x.com", source_id=2,
+        text="Reply to Joseph", importance="normal",
+        source_sender="joseph@x.com", source_subject="Re: Project sync",
+    )
+    add_or_consolidate_email_action(
+        db, thread_key="root@x.com", source_id=3,
+        text="Reply to Joseph", importance="normal",
+        source_sender="joseph@x.com", source_subject="Re: Re: Project sync",
+    )
+    tg = MagicMock()
+    update = {"update_id": 200, "message": {"chat": {"id": 42}, "text": "/actions"}}
+    handle_update(update, _cfg(), db, tg)
+    flat = "\n".join(c.args[0] for c in tg.send_message.call_args_list)
+    assert "(3 messages)" in flat
+
+
+def test_actions_card_omits_count_for_single_thread(tmp_path):
+    """A fresh single-message action (thread_count=1) must NOT print
+    '(1 messages)' — that's chatter, not signal."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    from hermes.actions.store import add_or_consolidate_email_action
+    add_or_consolidate_email_action(
+        db, thread_key="root@x.com", source_id=1,
+        text="Reply to Joseph", importance="normal",
+        source_sender="joseph@x.com",
+    )
+    tg = MagicMock()
+    update = {"update_id": 201, "message": {"chat": {"id": 42}, "text": "/actions"}}
+    handle_update(update, _cfg(), db, tg)
+    flat = "\n".join(c.args[0] for c in tg.send_message.call_args_list)
+    assert "(1 messages)" not in flat
+    assert "messages)" not in flat
+
+
 def test_actions_command_each_card_has_buttons(tmp_path):
     """Every per-action card carries the three-button row."""
     db = connect(tmp_path / "t.sqlite"); migrate(db)
