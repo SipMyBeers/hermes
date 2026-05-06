@@ -262,7 +262,8 @@ def _cmd_actions(args, cfg, db, tg):
     for a in rows:
         if a.source_kind != last_kind:
             label = {"email": "✉️ *Email*", "digestion": "🔖 *URL*",
-                     "manual": "📝 *Manual*"}.get(a.source_kind, a.source_kind)
+                     "manual": "📝 *Manual*",
+                     "feed_item": "📰 *Feed*"}.get(a.source_kind, a.source_kind)
             tg.send_message(label)
             last_kind = a.source_kind
         badge = "🔴 " if a.importance == "urgent" else ""
@@ -274,9 +275,21 @@ def _cmd_actions(args, cfg, db, tg):
             f" _({a.thread_count} messages)_" if a.thread_count > 1 else ""
         )
         ctx = f"\n_{a.source_subject[:80]}_" if a.source_subject else ""
+        # Phase N.2: when this action originated from an inbound email,
+        # look up its persisted Message-ID and build a Gmail jump-link.
+        # We only do this for source_kind=='email' — URL/feed/manual
+        # actions don't have a corresponding Gmail thread to deep-link to.
+        gmail_url = ""
+        if a.source_kind == "email" and a.source_id is not None:
+            row = db.execute(
+                "SELECT message_id FROM messages WHERE uid=?", (a.source_id,)
+            ).fetchone()
+            if row and row[0]:
+                from hermes.mail.gmail_link import gmail_url_for
+                gmail_url = gmail_url_for(row[0])
         tg.send_message(
             f"{badge}{a.text}{count_suffix}{ctx}",
-            reply_markup=actions_card(a.id),
+            reply_markup=actions_card(a.id, gmail_url=gmail_url),
         )
 
 

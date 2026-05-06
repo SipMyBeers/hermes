@@ -232,6 +232,13 @@ def process_message(
                         f"Subject: {subject[:140]}\n\n"
                         f"{brief.summary}"
                     )
+                    # Phase N.2: build a Gmail jump-link off the
+                    # persisted RFC 822 Message-ID so the urgent-ping
+                    # card can carry a 📬 Open in Gmail row. Falls back
+                    # to "" for the bootstrap-sentinel id, which
+                    # gmail_url_for() filters out.
+                    from hermes.mail.gmail_link import gmail_url_for
+                    gmail_url = gmail_url_for(message_id)
                     if new_ids:
                         # Two-row keyboard: action triad (Done/Snooze/
                         # Dismiss bound to the first action id) + Draft
@@ -239,14 +246,17 @@ def process_message(
                         # close the todo AND queue a reply from one ping.
                         _telegram(cfg).send_message(
                             ping_text,
-                            reply_markup=urgent_card(new_ids[0], uid),
+                            reply_markup=urgent_card(
+                                new_ids[0], uid, gmail_url=gmail_url,
+                            ),
                         )
                     else:
                         # No action ids extracted but the LLM still flagged
                         # this as urgent — surface the Draft button alone
                         # so the user can move on it.
                         _telegram(cfg).send_message(
-                            ping_text, reply_markup=lead_card(uid),
+                            ping_text,
+                            reply_markup=lead_card(uid, gmail_url=gmail_url),
                         )
                 except Exception as e:
                     logger.warning("urgent ping failed: {}", e)
@@ -267,12 +277,17 @@ def process_message(
                 logger.error("imap lead-label failed uid={} err={}", uid, e)
             try:
                 subj = subject[:140]
+                # Phase N.2: lead pings carry a Gmail jump-link too so
+                # the user can scan the original thread in Gmail web
+                # before deciding whether to draft a reply.
+                from hermes.mail.gmail_link import gmail_url_for
+                gmail_url = gmail_url_for(message_id)
                 _telegram(cfg).send_message(
                     f"🆕 *New lead*\n"
                     f"From: {lead.sender}\n"
                     f"Subject: {subj}\n"
                     f"Why: {lead.reason}",
-                    reply_markup=lead_card(uid),
+                    reply_markup=lead_card(uid, gmail_url=gmail_url),
                 )
             except Exception as e:
                 logger.warning("lead telegram ping failed: {}", e)

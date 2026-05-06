@@ -227,9 +227,13 @@ def test_lead_detection_persists_and_pings(tmp_path, monkeypatch):
     assert "New lead" in text
     assert "unknown.io" in text
     # Phase L: lead pings carry a Draft-reply button bound to uid.
+    # Phase N.2: lead cards may also carry a url-button for Gmail —
+    # extract only callback-shaped buttons here so the assertion stays
+    # focused on the Draft callback wiring.
     kb = fake_tg.send_message.call_args.kwargs.get("reply_markup")
     assert kb is not None
-    cbs = [b["callback_data"] for r in kb["inline_keyboard"] for b in r]
+    cbs = [b["callback_data"] for r in kb["inline_keyboard"] for b in r
+           if "callback_data" in b]
     assert "draft:200" in cbs
 
 
@@ -347,7 +351,11 @@ def test_urgent_inbox_ping_includes_action_button(tmp_path, monkeypatch):
     assert len(urgent_calls) == 1
     kb = urgent_calls[0].kwargs.get("reply_markup")
     assert kb is not None
-    cbs = [b["callback_data"] for r in kb["inline_keyboard"] for b in r]
+    # Phase N.2: the keyboard may also carry a url-button for Gmail.
+    # Filter to callback-shaped buttons so the action/draft callback
+    # checks stay focused.
+    cbs = [b["callback_data"] for r in kb["inline_keyboard"] for b in r
+           if "callback_data" in b]
     # First action id was inserted as the only row -> id 1.
     aid = db.execute("SELECT id FROM actions").fetchone()[0]
     assert f"done:{aid}" in cbs
@@ -355,6 +363,47 @@ def test_urgent_inbox_ping_includes_action_button(tmp_path, monkeypatch):
     assert f"dismiss:{aid}" in cbs
     # Phase L: second-row Draft button wired to the message uid.
     assert "draft:304" in cbs
+
+
+def test_urgent_inbox_ping_includes_gmail_link(tmp_path, monkeypatch):
+    """Phase N.2: the urgent ping carries a 📬 Open in Gmail row built
+    from the message's RFC 822 Message-ID. That gives the user a
+    one-tap deep-link into Gmail web alongside the action triad and
+    Draft button."""
+    from hermes.db import connect, migrate
+    db = connect(tmp_path / "t.sqlite")
+    migrate(db)
+    msg = message_from_bytes((FIXTURES / "client_boarhog.eml").read_bytes())
+    fake_imap = MagicMock()
+    fake_tg = MagicMock()
+    fake_brief = EmailBrief(
+        summary="Down.",
+        actions=("Rollback last deploy",),
+        tools=(),
+        importance="urgent",
+    )
+    monkeypatch.setattr(
+        "hermes.mail.daemon.summarize_for_brief",
+        lambda *a, **kw: fake_brief,
+    )
+    monkeypatch.setattr("hermes.mail.daemon._telegram", lambda cfg: fake_tg)
+    process_message(uid=350, msg=msg, db=db, cfg=_cfg(), imap=fake_imap,
+                    llm_classifier=None, drafter=None)
+    urgent_calls = [c for c in fake_tg.send_message.call_args_list
+                    if "🔴" in c.args[0]]
+    assert len(urgent_calls) == 1
+    kb = urgent_calls[0].kwargs.get("reply_markup")
+    assert kb is not None
+    rows = kb["inline_keyboard"]
+    # Three rows: action triad, Draft, Gmail jump-link.
+    assert len(rows) == 3
+    gmail_btn = rows[2][0]
+    assert "Gmail" in gmail_btn["text"]
+    assert gmail_btn["url"].startswith(
+        "https://mail.google.com/mail/u/0/#search/rfc822msgid:"
+    )
+    # The fixture's Message-ID is bh-1@boarhog.example.
+    assert "bh-1@boarhog.example" in gmail_btn["url"]
 
 
 def test_urgent_inbox_ping_without_actions_carries_lead_card(tmp_path, monkeypatch):
@@ -382,7 +431,9 @@ def test_urgent_inbox_ping_without_actions_carries_lead_card(tmp_path, monkeypat
     assert len(urgent_calls) == 1
     kb = urgent_calls[0].kwargs.get("reply_markup")
     assert kb is not None
-    cbs = [b["callback_data"] for r in kb["inline_keyboard"] for b in r]
+    # Filter to callback-shaped buttons (url-buttons may be present too).
+    cbs = [b["callback_data"] for r in kb["inline_keyboard"] for b in r
+           if "callback_data" in b]
     assert "draft:305" in cbs
     # No action ids existed so no done/snooze/dismiss buttons either.
     assert not any(cb.startswith("done:") for cb in cbs)

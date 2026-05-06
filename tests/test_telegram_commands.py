@@ -327,6 +327,97 @@ def test_actions_card_omits_count_for_single_thread(tmp_path):
     assert "messages)" not in flat
 
 
+def test_actions_email_action_includes_gmail_link(tmp_path):
+    """Phase N.2: an open action whose source_kind=='email' and whose
+    source_id points to a messages row carrying a real Message-ID
+    surfaces a 📬 Open in Gmail button on its card. The button is a
+    url-button (not callback) carrying the rfc822msgid search URL."""
+    from datetime import datetime, timezone
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    # Persist a messages row with a real Message-ID and an action that
+    # points to it via source_id.
+    db.execute(
+        "INSERT INTO messages(uid, message_id, received_at, sender, "
+        "subject, classification, classifier) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (42, "abc@example.com",
+         datetime.now(timezone.utc).isoformat(),
+         "Casey <casey@x.com>", "Project ping", "client", "rule"),
+    )
+    from hermes.actions.store import add_actions
+    add_actions(db, source_kind="email", source_id=42,
+                texts=["Reply to Casey"])
+    tg = MagicMock()
+    update = {"update_id": 700, "message": {"chat": {"id": 42},
+              "text": "/actions"}}
+    handle_update(update, _cfg(), db, tg)
+    # The action card is the call carrying a reply_markup keyboard.
+    card_calls = [c for c in tg.send_message.call_args_list
+                  if c.kwargs.get("reply_markup")]
+    assert len(card_calls) == 1
+    kb = card_calls[0].kwargs["reply_markup"]
+    rows = kb["inline_keyboard"]
+    # Row 0 is the action triad; Row 1 is the new Gmail jump-link.
+    assert len(rows) == 2
+    gmail_btn = rows[1][0]
+    assert "Gmail" in gmail_btn["text"]
+    assert gmail_btn["url"].startswith(
+        "https://mail.google.com/mail/u/0/#search/rfc822msgid:"
+    )
+    assert "abc@example.com" in gmail_btn["url"]
+
+
+def test_actions_digestion_action_omits_gmail_link(tmp_path):
+    """A URL-source action has no Gmail thread to link to, so the
+    Gmail row must NOT appear on its card. The triad row stays."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    from hermes.actions.store import add_actions
+    add_actions(db, source_kind="digestion", source_id=99,
+                texts=["Try webclaw on the docs"])
+    tg = MagicMock()
+    update = {"update_id": 701, "message": {"chat": {"id": 42},
+              "text": "/actions"}}
+    handle_update(update, _cfg(), db, tg)
+    card_calls = [c for c in tg.send_message.call_args_list
+                  if c.kwargs.get("reply_markup")]
+    assert len(card_calls) == 1
+    kb = card_calls[0].kwargs["reply_markup"]
+    rows = kb["inline_keyboard"]
+    # No Gmail row.
+    assert len(rows) == 1
+    flat = [b for r in rows for b in r]
+    assert not any("Gmail" in b.get("text", "") for b in flat)
+
+
+def test_actions_email_action_omits_gmail_link_for_bootstrap_sentinel(tmp_path):
+    """Email actions whose source row has the synthetic 'hermes-...'
+    Message-ID (bootstrap anchor) must NOT surface a Gmail row — that
+    URL would be broken."""
+    from datetime import datetime, timezone
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    db.execute(
+        "INSERT INTO messages(uid, message_id, received_at, sender, "
+        "subject, classification, classifier) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (60, "hermes-bootstrap-9999",
+         datetime.now(timezone.utc).isoformat(),
+         "<bootstrap>", "<initial anchor>", "other", "user"),
+    )
+    from hermes.actions.store import add_actions
+    add_actions(db, source_kind="email", source_id=60,
+                texts=["whatever"])
+    tg = MagicMock()
+    update = {"update_id": 702, "message": {"chat": {"id": 42},
+              "text": "/actions"}}
+    handle_update(update, _cfg(), db, tg)
+    card_calls = [c for c in tg.send_message.call_args_list
+                  if c.kwargs.get("reply_markup")]
+    assert len(card_calls) == 1
+    kb = card_calls[0].kwargs["reply_markup"]
+    rows = kb["inline_keyboard"]
+    assert len(rows) == 1  # no Gmail row
+
+
 def test_actions_command_each_card_has_buttons(tmp_path):
     """Every per-action card carries the three-button row."""
     db = connect(tmp_path / "t.sqlite"); migrate(db)
