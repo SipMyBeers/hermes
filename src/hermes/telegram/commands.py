@@ -21,10 +21,11 @@ Tap the buttons on cards I send. You don't have to type commands.
 
 If you'd rather type:
 • Send any URL → I'll fetch and summarize it. PDFs work too.
-• `/read <url> [--depth N]` — same as a bare URL; --depth crawls a docs site.
+• `/read <url> [--depth N]` — explicit fetch; --depth crawls a docs site.
 • `/digest` — today's report.
 • `/actions` — open to-dos.
 • `/save <url>` — for the weekly bookmark digest.
+• `/feeds` — list/add/remove RSS feeds; new items show up periodically.
 • `/draft <uid>` — draft a reply for a saved email.
 
 Slash-command index for power users:
@@ -107,6 +108,7 @@ def handle_update(
         "/dismiss": _cmd_dismiss,
         "/snooze": _cmd_snooze,
         "/draft": _cmd_draft,
+        "/feeds": _cmd_feeds,
         "/start": _cmd_start,
         "/help": lambda *a: tg.send_message(HELP_TEXT),
     }
@@ -425,6 +427,63 @@ def _cmd_draft(args, cfg, db, tg):
     )
 
 
+def _cmd_feeds(args, cfg, db, tg):
+    """List, add, or remove RSS feeds polled by hermes-rounds.
+
+    `/feeds`                  → list every configured feed with last-polled
+    `/feeds add <url> [name]` → add or rename a feed
+    `/feeds remove <url>`     → delete a feed (feed_items rows kept; the
+                                FK is just informational)
+    """
+    if not args:
+        rows = db.execute(
+            "SELECT url, name, last_polled_at FROM feeds ORDER BY url"
+        ).fetchall()
+        if not rows:
+            tg.send_message(
+                "No feeds configured.\n"
+                "Add one: `/feeds add https://news.ycombinator.com/rss [HN]`"
+            )
+            return
+        lines = [f"*Feeds ({len(rows)})*"]
+        for url, name, last in rows:
+            label = name or url
+            polled = (
+                f"  _last polled: {last}_" if last else "  _never polled_"
+            )
+            lines.append(f"• *{label}*\n  {url}\n{polled}")
+        lines.append("\nAdd: `/feeds add <url> [name]`")
+        lines.append("Remove: `/feeds remove <url>`")
+        tg.send_message("\n".join(lines))
+        return
+
+    sub = args[0].lower()
+    if sub == "add":
+        if len(args) < 2:
+            tg.send_message("Usage: /feeds add <url> [name]")
+            return
+        url = args[1]
+        if not url.startswith(("http://", "https://")):
+            tg.send_message(f"That doesn't look like a URL: {url}")
+            return
+        name = " ".join(args[2:]).strip()
+        from hermes.rss.poller import upsert_feed
+        upsert_feed(db, url, name)
+        tg.send_message(f"Added feed: {name or url}")
+    elif sub == "remove":
+        if len(args) < 2:
+            tg.send_message("Usage: /feeds remove <url>")
+            return
+        url = args[1]
+        from hermes.rss.poller import remove_feed
+        if remove_feed(db, url):
+            tg.send_message(f"Removed feed: {url}")
+        else:
+            tg.send_message(f"No feed at {url}")
+    else:
+        tg.send_message("Usage: /feeds [add|remove] [url] [name]")
+
+
 def handle_callback(
     update: dict,
     cfg: Config,
@@ -488,6 +547,26 @@ def handle_callback(
                     logger.warning("learned-promo record failed: {}", e)
             if msg_id and ok:
                 _decorate(tg, msg, prefix="🚫 ", suffix="\n\n_dismissed_",
+                          remove_keyboard=True)
+        elif verb == "savefeed" and len(parts) >= 2:
+            # Phase M.2: 🔖 Save on a feed_card stashes the article URL as
+            # a bookmark (existing weekly-bookmarks digest picks it up).
+            # The corresponding action stays open — the user can still
+            # tap Dismiss to clear it from /actions, or it'll decay to
+            # 'stale' on the actions-decay cron.
+            fid = int(parts[1])
+            row = db.execute(
+                "SELECT title, url FROM feed_items WHERE id=?", (fid,)
+            ).fetchone()
+            if not row:
+                tg.answer_callback_query(callback_id, "feed item not found")
+                return
+            title, url = row
+            from hermes.bookmarks.store import save_bookmark
+            save_bookmark(db, url=url, title=title, notes="from feeds")
+            tg.answer_callback_query(callback_id, "saved")
+            if msg_id:
+                _decorate(tg, msg, prefix="🔖 ", suffix="\n\n_saved_",
                           remove_keyboard=True)
         elif verb == "snooze" and len(parts) == 2:
             # Root tap — open the duration sub-keyboard. No DB write yet.

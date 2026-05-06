@@ -300,6 +300,53 @@ def test_callback_dismiss_skips_email_with_no_sender(tmp_path):
     assert rows[0] == 0
 
 
+def test_callback_savefeed_creates_bookmark(tmp_path):
+    """Phase M.2: tapping 🔖 Save on a feed_card stashes the article URL
+    via the existing bookmarks flow so it lands in the weekly digest."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    # Seed the feeds + feed_items rows the callback dereferences.
+    from hermes.rss.poller import upsert_feed
+    upsert_feed(db, "https://hn.example/rss", "HN")
+    cur = db.execute(
+        "INSERT INTO feed_items(feed_url, entry_id, title, url, "
+        "published_at, seen_at) VALUES (?, ?, ?, ?, ?, ?)",
+        ("https://hn.example/rss", "post-1", "Article title",
+         "https://news.example/article", "2026-05-02T00:00:00",
+         "2026-05-02T00:00:00"),
+    )
+    fid = cur.lastrowid
+    tg = MagicMock()
+    handle_callback(_cb(f"savefeed:{fid}", text="📰 *Article title*"),
+                    _cfg(), db, tg)
+    row = db.execute(
+        "SELECT url, title, notes FROM bookmarks"
+    ).fetchone()
+    assert row is not None
+    assert row[0] == "https://news.example/article"
+    assert row[1] == "Article title"
+    assert row[2] == "from feeds"
+    flash = tg.answer_callback_query.call_args.args[1]
+    assert "saved" in flash.lower()
+    # Card decorated to show the saved state, keyboard removed.
+    edit_kwargs = tg.edit_message_text.call_args.kwargs
+    assert edit_kwargs.get("reply_markup") is None
+    assert "🔖" in edit_kwargs["text"]
+    assert "_saved_" in edit_kwargs["text"]
+
+
+def test_callback_savefeed_unknown_id_flashes_error(tmp_path):
+    """savefeed on a feed_item_id that doesn't exist flashes 'feed item
+    not found' and writes nothing."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    tg = MagicMock()
+    handle_callback(_cb("savefeed:9999"), _cfg(), db, tg)
+    n = db.execute("SELECT COUNT(*) FROM bookmarks").fetchone()[0]
+    assert n == 0
+    flash = tg.answer_callback_query.call_args.args[1]
+    assert "not found" in flash.lower()
+    tg.edit_message_text.assert_not_called()
+
+
 def test_callback_draft_invokes_draft_handler(tmp_path):
     """Tapping a Draft button on a lead/urgent card routes through
     _cmd_draft with the message uid as args. Verify by seeding a message

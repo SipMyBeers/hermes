@@ -605,3 +605,139 @@ def test_help_text_lists_draft_command():
     """HELP_TEXT must surface /draft so power users discover it."""
     from hermes.telegram.commands import HELP_TEXT
     assert "/draft" in HELP_TEXT
+
+
+def test_help_text_lists_feeds_command():
+    """HELP_TEXT must surface /feeds so users can discover it."""
+    from hermes.telegram.commands import HELP_TEXT
+    assert "/feeds" in HELP_TEXT
+
+
+def test_feeds_list_empty(tmp_path):
+    """/feeds with no feeds configured → friendly bootstrap message."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    tg = MagicMock()
+    update = {"update_id": 400, "message": {"chat": {"id": 42},
+              "text": "/feeds"}}
+    handle_update(update, _cfg(), db, tg)
+    text = tg.send_message.call_args.args[0]
+    assert "No feeds configured" in text
+    assert "/feeds add" in text
+
+
+def test_feeds_list_renders_each_feed(tmp_path):
+    """/feeds (no args) lists every saved feed with its name and URL."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    from hermes.rss.poller import upsert_feed
+    upsert_feed(db, "https://hn.example/rss", "HN")
+    upsert_feed(db, "https://lobsters.example/rss", "Lobsters")
+    tg = MagicMock()
+    update = {"update_id": 401, "message": {"chat": {"id": 42},
+              "text": "/feeds"}}
+    handle_update(update, _cfg(), db, tg)
+    text = tg.send_message.call_args.args[0]
+    assert "HN" in text
+    assert "Lobsters" in text
+    assert "https://hn.example/rss" in text
+    assert "https://lobsters.example/rss" in text
+    assert "(2)" in text  # the *Feeds (2)* header
+
+
+def test_feeds_add_inserts_row(tmp_path):
+    """/feeds add <url> [name...] persists a feeds row."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    tg = MagicMock()
+    update = {"update_id": 402, "message": {"chat": {"id": 42},
+              "text": "/feeds add https://hn.example/rss HN"}}
+    handle_update(update, _cfg(), db, tg)
+    row = db.execute(
+        "SELECT url, name FROM feeds WHERE url=?",
+        ("https://hn.example/rss",),
+    ).fetchone()
+    assert row == ("https://hn.example/rss", "HN")
+    text = tg.send_message.call_args.args[0]
+    assert "Added feed" in text
+    assert "HN" in text
+
+
+def test_feeds_add_supports_multi_word_name(tmp_path):
+    """Trailing words after the URL get joined into the feed name."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    tg = MagicMock()
+    update = {"update_id": 403, "message": {"chat": {"id": 42},
+              "text": "/feeds add https://hn.example/rss Hacker News"}}
+    handle_update(update, _cfg(), db, tg)
+    row = db.execute(
+        "SELECT name FROM feeds WHERE url=?",
+        ("https://hn.example/rss",),
+    ).fetchone()
+    assert row[0] == "Hacker News"
+
+
+def test_feeds_add_rejects_non_url(tmp_path):
+    """`/feeds add not-a-url` should not write a row and should warn."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    tg = MagicMock()
+    update = {"update_id": 404, "message": {"chat": {"id": 42},
+              "text": "/feeds add notaurl"}}
+    handle_update(update, _cfg(), db, tg)
+    n = db.execute("SELECT COUNT(*) FROM feeds").fetchone()[0]
+    assert n == 0
+    text = tg.send_message.call_args.args[0]
+    assert "doesn't look like a URL" in text
+
+
+def test_feeds_add_with_no_url_shows_usage(tmp_path):
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    tg = MagicMock()
+    update = {"update_id": 405, "message": {"chat": {"id": 42},
+              "text": "/feeds add"}}
+    handle_update(update, _cfg(), db, tg)
+    text = tg.send_message.call_args.args[0]
+    assert "Usage:" in text
+
+
+def test_feeds_remove_existing(tmp_path):
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    from hermes.rss.poller import upsert_feed
+    upsert_feed(db, "https://hn.example/rss", "HN")
+    tg = MagicMock()
+    update = {"update_id": 406, "message": {"chat": {"id": 42},
+              "text": "/feeds remove https://hn.example/rss"}}
+    handle_update(update, _cfg(), db, tg)
+    n = db.execute("SELECT COUNT(*) FROM feeds").fetchone()[0]
+    assert n == 0
+    text = tg.send_message.call_args.args[0]
+    assert "Removed feed" in text
+
+
+def test_feeds_remove_missing(tmp_path):
+    """Removing a feed that doesn't exist tells the user politely."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    tg = MagicMock()
+    update = {"update_id": 407, "message": {"chat": {"id": 42},
+              "text": "/feeds remove https://nope.example/rss"}}
+    handle_update(update, _cfg(), db, tg)
+    text = tg.send_message.call_args.args[0]
+    assert "No feed at" in text
+
+
+def test_feeds_remove_with_no_url_shows_usage(tmp_path):
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    tg = MagicMock()
+    update = {"update_id": 408, "message": {"chat": {"id": 42},
+              "text": "/feeds remove"}}
+    handle_update(update, _cfg(), db, tg)
+    text = tg.send_message.call_args.args[0]
+    assert "Usage:" in text
+
+
+def test_feeds_unknown_subcommand_shows_usage(tmp_path):
+    """`/feeds wat` falls through to the catch-all usage line."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    tg = MagicMock()
+    update = {"update_id": 409, "message": {"chat": {"id": 42},
+              "text": "/feeds bogus"}}
+    handle_update(update, _cfg(), db, tg)
+    text = tg.send_message.call_args.args[0]
+    assert "Usage:" in text

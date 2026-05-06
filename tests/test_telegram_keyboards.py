@@ -1,6 +1,6 @@
 from hermes.telegram.keyboards import (
     actions_card, snooze_choices, approval_card, dashboard,
-    lead_card, urgent_card,
+    lead_card, urgent_card, feed_card,
 )
 
 
@@ -48,13 +48,66 @@ def test_dashboard_has_actions_and_digest():
 
 
 def test_callback_data_under_64_bytes():
-    """Telegram's hard limit is 64 bytes for callback_data — protect it."""
+    """Telegram's hard limit is 64 bytes for callback_data — protect it.
+
+    feed_card is excluded here because its 'Read' button uses a `url`
+    field rather than `callback_data` (Telegram's url-button shape).
+    A dedicated test below asserts the url-button shape; the other two
+    buttons on feed_card have callback_data and are sanity-checked
+    separately."""
     for kb in (actions_card(999_999_999), snooze_choices(999_999_999),
                approval_card(999_999_999), dashboard(),
                lead_card(999_999_999),
                urgent_card(999_999_999, 999_999_999)):
         for row in kb["inline_keyboard"]:
             for btn in row:
+                assert len(btn["callback_data"].encode()) <= 64, btn
+
+
+def test_feed_card_has_url_button_and_save_button():
+    """feed_card surfaces three buttons: a url-button for Read (Telegram
+    opens the link natively, no callback round-trip), a savefeed callback
+    bound to the feed_item id, and a done callback bound to the action id
+    that the rounds job created.
+
+    The url-button shape is `{"text": ..., "url": ...}` — distinct from
+    the callback shape `{"text": ..., "callback_data": ...}`. They're
+    mutually exclusive in Telegram's bot API."""
+    kb = feed_card(action_id=7, feed_item_id=42, url="https://example.com/x")
+    rows = kb["inline_keyboard"]
+    assert len(rows) == 1
+    btns = rows[0]
+    assert len(btns) == 3
+    # Read: url-button shape.
+    read_btn = btns[0]
+    assert "Read" in read_btn["text"]
+    assert read_btn["url"] == "https://example.com/x"
+    assert "callback_data" not in read_btn
+    # Save: callback bound to the feed_item id so we can look up
+    # title + url before writing the bookmark.
+    save_btn = btns[1]
+    assert "Save" in save_btn["text"]
+    assert save_btn["callback_data"] == "savefeed:42"
+    assert "url" not in save_btn
+    # Dismiss: closes the action row by routing through the existing
+    # done verb so the existing dismissal/decoration plumbing handles it.
+    dismiss_btn = btns[2]
+    assert "Dismiss" in dismiss_btn["text"]
+    assert dismiss_btn["callback_data"] == "done:7"
+
+
+def test_feed_card_callback_buttons_under_64_bytes():
+    """The two callback buttons on feed_card stay within Telegram's 64-byte
+    limit even at extreme ids. The url button is excluded because the
+    URL itself can legitimately exceed 64 bytes."""
+    kb = feed_card(
+        action_id=999_999_999,
+        feed_item_id=999_999_999,
+        url="https://example.com/" + "x" * 500,
+    )
+    for row in kb["inline_keyboard"]:
+        for btn in row:
+            if "callback_data" in btn:
                 assert len(btn["callback_data"].encode()) <= 64, btn
 
 
