@@ -20,6 +20,7 @@ from hermes.db import connect, migrate
 from hermes.digest.enrich import summarize_for_brief
 from hermes.extract.lead import detect_lead, LeadSignal
 from hermes.mail.imap_client import ImapClient
+from hermes.mail.thread import thread_key_for
 from hermes.telegram.client import TelegramClient
 from hermes.telegram.keyboards import lead_card, urgent_card
 
@@ -140,6 +141,12 @@ def process_message(
         received = datetime.now(timezone.utc).isoformat()
     sender = _decode_header(msg.get("From"))
     subject = _decode_header(msg.get("Subject"))
+    # Phase N.1: derive a deterministic thread_key from the RFC 5322
+    # headers so we can consolidate same-thread mail into one open action.
+    # thread_key_for() never returns None — falls back to empty string,
+    # which we coerce to the lowercased Message-ID so this column is
+    # never NULL on real inbound mail.
+    tkey = thread_key_for(msg) or message_id.lower()
 
     draft = ""
     if classification.label == "client" and drafter is not None:
@@ -152,13 +159,14 @@ def process_message(
     db.execute(
         "INSERT OR IGNORE INTO messages "
         "(uid, message_id, received_at, sender, subject, classification, classifier, "
-        "confidence, label, draft_text, drafted_at, raw_email) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "confidence, label, draft_text, drafted_at, raw_email, thread_key) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             uid, message_id, received, sender, subject,
             classification.label, classification.classifier, classification.confidence,
             label, draft, datetime.now(timezone.utc).isoformat() if draft else None,
             raw,
+            tkey,
         ),
     )
     try:
@@ -275,15 +283,19 @@ def _bootstrap_anchor(db: sqlite3.Connection, imap: ImapClient) -> int:
     anchor = imap.current_max_uid()
     if anchor > 0:
         # Persist a sentinel row so subsequent calls don't re-anchor.
+        # thread_key is explicitly NULL — the bootstrap row isn't real
+        # mail and shouldn't ever match a thread lookup.
         db.execute(
             "INSERT OR IGNORE INTO messages "
-            "(uid, message_id, received_at, sender, subject, classification, classifier, confidence, raw_email) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "(uid, message_id, received_at, sender, subject, classification, "
+            " classifier, confidence, raw_email, thread_key) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 anchor, f"hermes-bootstrap-{anchor}",
                 datetime.now(timezone.utc).isoformat(),
                 "<bootstrap>", "<initial anchor>",
                 "other", "user", 1.0,
+                None,
                 None,
             ),
         )
