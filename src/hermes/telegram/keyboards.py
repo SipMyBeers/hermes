@@ -8,13 +8,22 @@ verbs are <=8 chars, ids are integers, optional arg suffixes ('1d', '3d',
 from __future__ import annotations
 
 
-def actions_card(action_id: int) -> dict:
-    """Three-button row for an open action: Done, Snooze, Dismiss."""
-    return {"inline_keyboard": [[
+def actions_card(action_id: int, gmail_url: str = "") -> dict:
+    """Three-button row for an open action: Done, Snooze, Dismiss.
+
+    Phase N.2: when the action came from an email and a Gmail deep-link
+    URL is known, append a second 1-button row carrying that URL so the
+    user can jump straight into the thread in Gmail web. Empty
+    `gmail_url` keeps the back-compat single-row shape — every existing
+    caller that passes only `action_id` keeps working unchanged."""
+    rows = [[
         {"text": "✅ Done", "callback_data": f"done:{action_id}"},
         {"text": "🌙 Snooze", "callback_data": f"snooze:{action_id}"},
         {"text": "🚫 Dismiss", "callback_data": f"dismiss:{action_id}"},
-    ]]}
+    ]]
+    if gmail_url:
+        rows.append([{"text": "📬 Open in Gmail", "url": gmail_url}])
+    return {"inline_keyboard": rows}
 
 
 def snooze_choices(action_id: int) -> dict:
@@ -45,15 +54,20 @@ def dashboard() -> dict:
     ]]}
 
 
-def lead_card(uid: int) -> dict:
+def lead_card(uid: int, gmail_url: str = "") -> dict:
     """Single-button card attached to '🆕 New lead' pings.
 
     Tapping fires the draft callback with the originating message uid so
     the user can go from notification → reviewable Send/Discard card in
-    one tap, no slash commands."""
-    return {"inline_keyboard": [[
+    one tap, no slash commands. Phase N.2: optional second row with a
+    Gmail jump-link when the message came from a real RFC 822
+    Message-ID."""
+    rows = [[
         {"text": "✏️ Draft reply", "callback_data": f"draft:{uid}"},
-    ]]}
+    ]]
+    if gmail_url:
+        rows.append([{"text": "📬 Open in Gmail", "url": gmail_url}])
+    return {"inline_keyboard": rows}
 
 
 def feed_card(action_id: int, feed_item_id: int, url: str) -> dict:
@@ -74,17 +88,25 @@ def feed_card(action_id: int, feed_item_id: int, url: str) -> dict:
     ]]}
 
 
-def urgent_card(action_id: int, uid: int) -> dict:
+def urgent_card(action_id: int, uid: int, gmail_url: str = "") -> dict:
     """Two-row keyboard for urgent inbox pings: action triad + draft.
 
     The first row is the standard Done/Snooze/Dismiss bound to the
     extracted action id. The second row offers Draft reply bound to the
     message uid so the user can close the email loop without navigating
-    away. Two rows keeps the layout readable on narrow screens."""
-    return {"inline_keyboard": [[
+    away. Two rows keeps the layout readable on narrow screens.
+
+    Phase N.2: when a Gmail deep-link is known, append a third 1-button
+    row '📬 Open in Gmail' so the user can pull up the original thread
+    in Gmail web with one tap. Back-compat: callers that don't pass
+    `gmail_url` still get the original two-row layout."""
+    rows = [[
         {"text": "✅ Done", "callback_data": f"done:{action_id}"},
         {"text": "🌙 Snooze", "callback_data": f"snooze:{action_id}"},
         {"text": "🚫 Dismiss", "callback_data": f"dismiss:{action_id}"},
     ], [
         {"text": "✏️ Draft reply", "callback_data": f"draft:{uid}"},
-    ]]}
+    ]]
+    if gmail_url:
+        rows.append([{"text": "📬 Open in Gmail", "url": gmail_url}])
+    return {"inline_keyboard": rows}

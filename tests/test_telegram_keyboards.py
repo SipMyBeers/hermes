@@ -134,3 +134,68 @@ def test_urgent_card_has_action_row_and_draft_row():
     # Row 2: single Draft button bound to message uid.
     assert len(rows[1]) == 1
     assert rows[1][0]["callback_data"] == "draft:100"
+
+
+# --- Phase N.2: optional Gmail jump-link row ---------------------------------
+
+
+def test_actions_card_omits_gmail_row_when_url_empty():
+    """Default `gmail_url=""` keeps the original single-row shape so
+    every existing call site stays exactly as it was."""
+    kb = actions_card(23)
+    assert len(kb["inline_keyboard"]) == 1
+    kb2 = actions_card(23, gmail_url="")
+    assert len(kb2["inline_keyboard"]) == 1
+
+
+def test_actions_card_appends_gmail_url_button_when_provided():
+    """Passing a non-empty Gmail URL adds a second row with one
+    url-button (no callback_data) labelled '📬 Open in Gmail'."""
+    url = "https://mail.google.com/mail/u/0/#search/rfc822msgid:abc@x"
+    kb = actions_card(23, gmail_url=url)
+    rows = kb["inline_keyboard"]
+    assert len(rows) == 2
+    # First row preserved.
+    cbs_row1 = [b["callback_data"] for b in rows[0]]
+    assert cbs_row1 == ["done:23", "snooze:23", "dismiss:23"]
+    # Second row: single url-button.
+    assert len(rows[1]) == 1
+    btn = rows[1][0]
+    assert "Gmail" in btn["text"]
+    assert btn["url"] == url
+    assert "callback_data" not in btn
+
+
+def test_urgent_card_appends_gmail_row():
+    """Urgent card grows from 2 rows → 3 rows when a Gmail URL is
+    provided. The action triad and Draft row are unaffected."""
+    url = "https://mail.google.com/mail/u/0/#search/rfc822msgid:abc@x"
+    kb = urgent_card(action_id=7, uid=100, gmail_url=url)
+    rows = kb["inline_keyboard"]
+    assert len(rows) == 3
+    # Row 0 + Row 1 unchanged.
+    assert [b["callback_data"] for b in rows[0]] == [
+        "done:7", "snooze:7", "dismiss:7",
+    ]
+    assert rows[1][0]["callback_data"] == "draft:100"
+    # Row 2: Gmail jump-link.
+    assert rows[2][0]["url"] == url
+    assert "Gmail" in rows[2][0]["text"]
+
+
+def test_urgent_card_omits_gmail_row_when_url_empty():
+    """No URL → keep the original two-row layout."""
+    kb = urgent_card(action_id=7, uid=100)
+    assert len(kb["inline_keyboard"]) == 2
+
+
+def test_lead_card_appends_gmail_row_when_url_provided():
+    """The lead-ping card likewise gets a second row when a URL is
+    known. Without one, the single-button shape is preserved."""
+    bare = lead_card(42)
+    assert len(bare["inline_keyboard"]) == 1
+    url = "https://mail.google.com/mail/u/0/#search/rfc822msgid:abc@x"
+    decorated = lead_card(42, gmail_url=url)
+    rows = decorated["inline_keyboard"]
+    assert len(rows) == 2
+    assert rows[1][0]["url"] == url
