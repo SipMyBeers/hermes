@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>             <string>com.beers.hermes-rounds</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/macmini/Projects/hermes/.venv/bin/hermes-rounds</string>
+  </array>
+  <key>WorkingDirectory</key>  <string>/Users/macmini/Projects/hermes</string>
+  <key>RunAtLoad</key>         <false/>
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Hour</key><integer>8</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Hour</key><integer>12</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Hour</key><integer>16</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Hour</key><integer>20</integer><key>Minute</key><integer>0</integer></dict>
+  </array>
+  <key>StandardOutPath</key>   <string>/Users/macmini/.hermes/logs/rounds.log</string>
+  <key>StandardErrorPath</key> <string>/Users/macmini/.hermes/logs/rounds.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>DYLD_FALLBACK_LIBRARY_PATH</key><string>/opt/homebrew/lib</string>
+  </dict>
+</dict>
+</plist>
