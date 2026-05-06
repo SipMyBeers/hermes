@@ -23,6 +23,7 @@ hermes-stale = "hermes.stale.job:main"
 hermes-bookmarks-weekly = "hermes.bookmarks.job:main"
 hermes-actions-decay = "hermes.actions.job:main"
 hermes-weekly-recap = "hermes.digest.weekly_job:main"
+hermes-rounds = "hermes.rounds.job:main"
 
 [dependency-groups]
 dev = [

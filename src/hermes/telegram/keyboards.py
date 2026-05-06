@@ -56,6 +56,24 @@ def lead_card(uid: int) -> dict:
     ]]}
 
 
+def feed_card(action_id: int, feed_item_id: int, url: str) -> dict:
+    """Three-button row for a Phase M.2 feed-item card.
+
+    The 'Read' button is a Telegram url-button — Telegram opens the URL
+    natively, no callback round-trip, no DB write. 'Save' stashes the URL
+    as a bookmark via the existing bookmarks flow. 'Dismiss' closes the
+    matching action row.
+
+    The url-button shape is `{"text": ..., "url": ...}` (no callback_data);
+    callback-shaped buttons use `{"text": ..., "callback_data": ...}`. The
+    two are mutually exclusive in the Telegram bot API."""
+    return {"inline_keyboard": [[
+        {"text": "📖 Read", "url": url},
+        {"text": "🔖 Save", "callback_data": f"savefeed:{feed_item_id}"},
+        {"text": "🚫 Dismiss", "callback_data": f"done:{action_id}"},
+    ]]}
+
+
 def urgent_card(action_id: int, uid: int) -> dict:
     """Two-row keyboard for urgent inbox pings: action triad + draft.
 
