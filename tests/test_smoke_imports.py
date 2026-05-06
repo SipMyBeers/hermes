@@ -39,6 +39,7 @@ _MODULES = [
     "hermes.mail.daemon",
     "hermes.mail.imap_client",
     "hermes.mail.smtp_client",
+    "hermes.mail.thread",
     "hermes.rounds.job",
     "hermes.rss.poller",
     "hermes.stale.check",
