@@ -32,6 +32,7 @@ _MODULES = [
     "hermes.ingest.url",
     "hermes.ingest.video",
     "hermes.ingest.web",
+    "hermes.ingest.webclaw",
     "hermes.invoice.cli",
     "hermes.invoice.job",
     "hermes.invoice.render",

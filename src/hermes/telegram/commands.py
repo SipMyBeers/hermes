@@ -20,7 +20,8 @@ HELP_TEXT = """*Hermes — your inbox + URL bot*
 Tap the buttons on cards I send. You don't have to type commands.
 
 If you'd rather type:
-• Send any URL → I'll fetch and summarize it.
+• Send any URL → I'll fetch and summarize it. PDFs work too.
+• `/read <url> [--depth N]` — same as a bare URL; --depth crawls a docs site.
 • `/digest` — today's report.
 • `/actions` — open to-dos.
 • `/save <url>` — for the weekly bookmark digest.
