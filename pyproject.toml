@@ -10,6 +10,7 @@ dependencies = [
     "weasyprint>=62",
     "loguru>=0.7",
     "trafilatura>=2.0",
+    "feedparser>=6.0",
 ]
 
 [project.scripts]
