@@ -37,6 +37,7 @@ _MODULES = [
     "hermes.invoice.job",
     "hermes.invoice.render",
     "hermes.mail.daemon",
+    "hermes.mail.gmail_link",
     "hermes.mail.imap_client",
     "hermes.mail.smtp_client",
     "hermes.mail.thread",
