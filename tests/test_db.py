@@ -332,6 +332,103 @@ def test_migrate_v6_to_v7_widens_source_kind_check(tmp_path: Path):
     conn2.close()
 
 
+def test_migrate_v7_to_v8_adds_thread_columns(tmp_path: Path):
+    """v7 -> v8 adds thread_key on messages, thread_key+thread_count on
+    actions, and matching indexes — without touching existing rows."""
+    db_path = tmp_path / "t.sqlite"
+    conn = connect(db_path)
+    # Build a v7 DB by running migrate then forcing user_version back, and
+    # dropping the v8-introduced columns / indexes so we can re-add them.
+    migrate(conn)
+    # Sanity: v8 already ran via migrate(); simulate a v7 DB by recreating
+    # messages and actions WITHOUT the v8 additions, then re-running migrate.
+    conn.executescript("""
+        DROP TABLE IF EXISTS messages;
+        DROP TABLE IF EXISTS actions;
+        CREATE TABLE messages (
+          uid INTEGER PRIMARY KEY,
+          message_id TEXT UNIQUE NOT NULL,
+          received_at TEXT NOT NULL,
+          sender TEXT NOT NULL,
+          subject TEXT,
+          classification TEXT NOT NULL CHECK (classification IN ('promo','client','personal','transactional','review','other','unknown')),
+          classifier TEXT NOT NULL CHECK (classifier IN ('rule','llm','user')),
+          confidence REAL,
+          label TEXT,
+          draft_text TEXT,
+          drafted_at TEXT,
+          notified_at TEXT,
+          raw_email BLOB
+        );
+        CREATE TABLE actions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          source_kind TEXT NOT NULL CHECK (source_kind IN ('email','digestion','manual','feed_item')),
+          source_id INTEGER,
+          text TEXT NOT NULL,
+          importance TEXT NOT NULL DEFAULT 'normal'
+            CHECK (importance IN ('urgent','normal','low')),
+          status TEXT NOT NULL DEFAULT 'open'
+            CHECK (status IN ('open','done','dismissed','snoozed','stale')),
+          due_at TEXT,
+          snoozed_until TEXT,
+          created_at TEXT NOT NULL,
+          done_at TEXT,
+          source_subject TEXT,
+          source_sender TEXT
+        );
+    """)
+    # Sentinel rows that must survive the migration with NULL/default new cols.
+    conn.execute(
+        "INSERT INTO messages(uid, message_id, received_at, sender, classification, classifier) "
+        "VALUES (1, 'mid-1', '2026-05-02T00:00:00', 'a@b.com', 'client', 'rule')"
+    )
+    conn.execute(
+        "INSERT INTO actions(source_kind, source_id, text, created_at) "
+        "VALUES ('email', 1, 'Reply to Casey', '2026-05-02T00:00:00')"
+    )
+    conn.execute("PRAGMA user_version = 7")
+
+    # Pre-condition: thread_key / thread_count not present.
+    msg_cols = {r[1] for r in conn.execute("PRAGMA table_info(messages)")}
+    act_cols = {r[1] for r in conn.execute("PRAGMA table_info(actions)")}
+    assert "thread_key" not in msg_cols
+    assert "thread_key" not in act_cols
+    assert "thread_count" not in act_cols
+
+    # Migrate to v8.
+    migrate(conn)
+
+    msg_cols = {r[1] for r in conn.execute("PRAGMA table_info(messages)")}
+    act_cols = {r[1] for r in conn.execute("PRAGMA table_info(actions)")}
+    assert "thread_key" in msg_cols
+    assert "thread_key" in act_cols
+    assert "thread_count" in act_cols
+
+    # Existing rows survived; new columns default to NULL / 1.
+    surviving_msg = conn.execute(
+        "SELECT thread_key FROM messages WHERE uid=1"
+    ).fetchone()
+    assert surviving_msg == (None,)
+    surviving_act = conn.execute(
+        "SELECT thread_key, thread_count FROM actions WHERE source_id=1"
+    ).fetchone()
+    assert surviving_act == (None, 1)
+
+    # Indexes added.
+    indexes = {row[0] for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='index'"
+    )}
+    assert "idx_messages_thread" in indexes
+    assert "idx_actions_thread" in indexes
+
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+
+    # Idempotency — re-running migrate is a no-op.
+    migrate(conn)
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+    conn.close()
+
+
 def test_messages_can_store_raw_email_blob(tmp_path: Path):
     conn = connect(tmp_path / "t.sqlite")
     migrate(conn)

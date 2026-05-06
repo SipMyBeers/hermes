@@ -2,7 +2,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 # Note: databases migrated from a v0/initial install may still have the old
 # `idx_messages_received` single-column index hanging around alongside the
@@ -239,6 +239,34 @@ def _migrate_v7(conn: sqlite3.Connection) -> None:
     """)
 
 
+def _migrate_v8(conn: sqlite3.Connection) -> None:
+    """Phase N.1: thread tracking on messages + actions for consolidation.
+
+    Adds messages.thread_key (the canonical RFC 5322 root-Message-ID for the
+    conversation), actions.thread_key (so we can find an open action for the
+    same thread before inserting a duplicate), and actions.thread_count
+    (rendered in /actions cards as 'Reply to Joseph (3 messages)'). Both
+    columns are nullable / defaulted so existing rows survive the migration
+    untouched. Idempotent via _has_column guards — re-running on a v8 DB
+    is a no-op.
+    """
+    if _has_table(conn, "messages") and not _has_column(conn, "messages", "thread_key"):
+        conn.execute("ALTER TABLE messages ADD COLUMN thread_key TEXT")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_messages_thread "
+            "ON messages(thread_key)"
+        )
+    if _has_table(conn, "actions") and not _has_column(conn, "actions", "thread_key"):
+        conn.execute("ALTER TABLE actions ADD COLUMN thread_key TEXT")
+        conn.execute(
+            "ALTER TABLE actions ADD COLUMN thread_count INTEGER NOT NULL DEFAULT 1"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_actions_thread "
+            "ON actions(thread_key, status)"
+        )
+
+
 def connect(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path, isolation_level=None)  # autocommit
@@ -250,6 +278,13 @@ def connect(db_path: Path) -> sqlite3.Connection:
 def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
     rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
     return any(r[1] == column for r in rows)
+
+
+def _has_table(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+    ).fetchone()
+    return row is not None
 
 
 def migrate(conn: sqlite3.Connection) -> None:
@@ -287,4 +322,9 @@ def migrate(conn: sqlite3.Connection) -> None:
         # for Phase M.2 content rounds. Recreates the actions table because
         # SQLite can't ALTER a CHECK constraint in place.
         _migrate_v7(conn)
+    if current < 8:
+        # v7 -> v8: provision Phase N.1 thread tracking columns on messages
+        # and actions for same-thread same-sender consolidation. Additive
+        # ALTERs only — no table rewrites.
+        _migrate_v8(conn)
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
