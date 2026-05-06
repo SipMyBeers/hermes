@@ -150,8 +150,10 @@ def test_bare_url_triggers_read(tmp_path):
     db = connect(tmp_path / "t.sqlite"); migrate(db)
     tg = MagicMock()
     captured = {}
-    def fake_ingest(url, db, source_chat_id=None, cookies_path="", cookies_from_browser=()):
+    def fake_ingest(url, db, source_chat_id=None, cookies_path="",
+                    cookies_from_browser=(), depth=0):
         captured["url"] = url
+        captured["depth"] = depth
         from hermes.ingest.url import Digestion
         return Digestion(id=1, url=url, kind="web", title="T", summary="S",
                          actions=(), tools=(), error="")
@@ -161,6 +163,8 @@ def test_bare_url_triggers_read(tmp_path):
               "text": "https://example.com/article"}}
     handle_update(update, _cfg(), db, tg)
     assert captured.get("url") == "https://example.com/article"
+    # Bare URL → single-page (depth=0).
+    assert captured.get("depth") == 0
 
 
 def test_read_command_with_no_args_shows_usage(tmp_path):
@@ -169,6 +173,75 @@ def test_read_command_with_no_args_shows_usage(tmp_path):
     update = {"update_id": 51, "message": {"chat": {"id": 42}, "text": "/read"}}
     handle_update(update, _cfg(), db, tg)
     assert "Usage:" in tg.send_message.call_args.args[0]
+
+
+def _fake_ingest_capture(captured: dict):
+    """Build a fake ingest() that records depth and returns a stub Digestion."""
+    def fake_ingest(url, db, source_chat_id=None, cookies_path="",
+                    cookies_from_browser=(), depth=0):
+        captured["url"] = url
+        captured["depth"] = depth
+        from hermes.ingest.url import Digestion
+        return Digestion(id=1, url=url, kind="web", title="T", summary="S",
+                         actions=(), tools=(), error="")
+    return fake_ingest
+
+
+def test_read_command_accepts_depth_flag(tmp_path):
+    """`/read <url> --depth 2` forwards depth=2 into ingest()."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    tg = MagicMock()
+    captured = {}
+    import hermes.telegram.commands as cmd
+    cmd.ingest = _fake_ingest_capture(captured)
+    update = {"update_id": 60, "message": {"chat": {"id": 42},
+              "text": "/read https://docs.example.com --depth 2"}}
+    handle_update(update, _cfg(), db, tg)
+    assert captured.get("depth") == 2
+
+
+def test_read_command_caps_depth_at_5(tmp_path):
+    """A user typing --depth 99 is clamped to 5 server-side."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    tg = MagicMock()
+    captured = {}
+    import hermes.telegram.commands as cmd
+    cmd.ingest = _fake_ingest_capture(captured)
+    update = {"update_id": 61, "message": {"chat": {"id": 42},
+              "text": "/read https://docs.example.com --depth 99"}}
+    handle_update(update, _cfg(), db, tg)
+    assert captured.get("depth") == 5
+
+
+def test_read_command_invalid_depth_shows_usage(tmp_path):
+    """`--depth notanumber` → usage hint, no ingest call."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    tg = MagicMock()
+    captured = {}
+    import hermes.telegram.commands as cmd
+    cmd.ingest = _fake_ingest_capture(captured)
+    update = {"update_id": 62, "message": {"chat": {"id": 42},
+              "text": "/read https://docs.example.com --depth notanumber"}}
+    handle_update(update, _cfg(), db, tg)
+    # Ingest was not called (no captured url), and we got a usage message.
+    assert "url" not in captured
+    msgs = [c.args[0] for c in tg.send_message.call_args_list]
+    assert any("Usage:" in m for m in msgs)
+
+
+def test_read_command_depth_acks_show_crawl(tmp_path):
+    """The 'Reading…' ack should mention the crawl depth so the user
+    knows it isn't a single-page fetch."""
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    tg = MagicMock()
+    captured = {}
+    import hermes.telegram.commands as cmd
+    cmd.ingest = _fake_ingest_capture(captured)
+    update = {"update_id": 63, "message": {"chat": {"id": 42},
+              "text": "/read https://docs.example.com --depth 3"}}
+    handle_update(update, _cfg(), db, tg)
+    msgs = [c.args[0] for c in tg.send_message.call_args_list]
+    assert any("crawl depth=3" in m for m in msgs)
 
 
 def test_actions_command_lists_open(tmp_path):

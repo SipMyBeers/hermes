@@ -226,13 +226,24 @@ def _cmd_save(args, cfg, db, tg):
 
 def _cmd_read(args, cfg, db, tg):
     if not args:
-        tg.send_message("Usage: /read <url>")
+        tg.send_message("Usage: /read <url> [--depth N]")
         return
     url = args[0]
     if not url.startswith(("http://", "https://")):
         tg.send_message(f"That doesn't look like a URL: {url}")
         return
-    _ingest_and_reply(url, cfg, db, tg)
+    depth = 0
+    if "--depth" in args:
+        try:
+            i = args.index("--depth")
+            depth = int(args[i + 1])
+            # Cap at 5 — beyond this webclaw crawls a long time and the
+            # combined markdown blows past gemma4's context window.
+            depth = max(0, min(5, depth))
+        except (IndexError, ValueError):
+            tg.send_message("Usage: /read <url> [--depth N]")
+            return
+    _ingest_and_reply(url, cfg, db, tg, depth=depth)
 
 
 def _cmd_actions(args, cfg, db, tg):
@@ -581,15 +592,22 @@ def _decorate(
         logger.warning("edit_message_text failed: {}", e)
 
 
-def _ingest_and_reply(url: str, cfg, db, tg) -> None:
-    """Shared ingest path used by /read and the bare-URL detector."""
-    tg.send_message(f"📥 Reading {url} …")
+def _ingest_and_reply(url: str, cfg, db, tg, depth: int = 0) -> None:
+    """Shared ingest path used by /read and the bare-URL detector.
+
+    depth>0 forwards to the webclaw crawl path so docs sites land as one
+    combined summary."""
+    ack = f"📥 Reading {url}"
+    if depth > 0:
+        ack += f" (crawl depth={depth})"
+    tg.send_message(ack + " …")
     d = ingest(
         url,
         db,
         source_chat_id=cfg.telegram.chat_id,
         cookies_path=cfg.ingest.cookies_path,
         cookies_from_browser=cfg.ingest.cookies_from_browser,
+        depth=depth,
     )
     if d.error:
         tg.send_message(f"⚠ Couldn't ingest #{d.id}\n{url}\n{d.error}")

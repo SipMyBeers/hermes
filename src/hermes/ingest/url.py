@@ -54,6 +54,7 @@ def ingest(
     source_chat_id: int | None = None,
     cookies_path: str = "",
     cookies_from_browser: tuple[str, ...] = (),
+    depth: int = 0,
 ) -> Digestion:
     """Fetch, extract, summarize, persist. Returns the Digestion row.
 
@@ -61,7 +62,10 @@ def ingest(
     returns it so the caller can ack the user with a useful message.
 
     cookies_path / cookies_from_browser: forwarded to extract_video for
-    Instagram, members-only YouTube, etc. Web extraction ignores them."""
+    Instagram, members-only YouTube, etc. Web extraction ignores them.
+
+    depth>0 asks the web extractor to crawl (webclaw --crawl --depth N).
+    Ignored for video URLs."""
     kind = classify_url(url)
     error = ""
     title = ""
@@ -69,7 +73,7 @@ def ingest(
     summary_obj = ContentSummary(summary="", actions=(), tools=())
     try:
         if kind == "web":
-            doc = extract_web(url)
+            doc = extract_web(url, depth=depth)
             title, text = doc.title, doc.text
             if text:
                 summary_obj = summarize(title=title, text=text)
