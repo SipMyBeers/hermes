@@ -36,3 +36,44 @@ def find_stale_threads(db: sqlite3.Connection, days: int = 5) -> list[StaleThrea
                     received_at=r[3], days_stale=int(r[4]))
         for r in rows
     ]
+
+
+@dataclass(frozen=True)
+class StalePipelineRow:
+    contact_email: str
+    display_name: str
+    stage: str
+    days_waiting: int
+    last_inbound_uid: int | None   # most recent inbound uid, for /draft
+
+
+def find_stale_pipeline(db: sqlite3.Connection, days: int = 4) -> list[StalePipelineRow]:
+    """Prospects we wrote to last who have gone quiet for N+ days.
+
+    Scope: lead/replied/quoted only — active/invoiced/closed have their own
+    rhythms. 'We wrote last' = last_outbound set AND (no inbound or inbound
+    older than outbound).
+    """
+    rows = db.execute(f"""
+        SELECT p.contact_email, COALESCE(p.display_name, ''), p.stage,
+               CAST((julianday('now') - julianday(p.last_outbound)) AS INTEGER)
+        FROM pipeline p
+        WHERE p.stage IN ('lead','replied','quoted')
+          AND p.last_outbound IS NOT NULL
+          AND p.last_outbound < datetime('now', '-{int(days)} days')
+          AND (p.last_inbound IS NULL OR p.last_inbound < p.last_outbound)
+        ORDER BY p.last_outbound ASC
+    """).fetchall()
+    out: list[StalePipelineRow] = []
+    for email, name, stage, days_waiting in rows:
+        uid_row = db.execute(
+            "SELECT uid FROM messages WHERE LOWER(sender) LIKE ? "
+            "ORDER BY received_at DESC LIMIT 1",
+            (f"%{email.lower()}%",),
+        ).fetchone()
+        out.append(StalePipelineRow(
+            contact_email=email, display_name=name, stage=stage,
+            days_waiting=int(days_waiting),
+            last_inbound_uid=int(uid_row[0]) if uid_row else None,
+        ))
+    return out

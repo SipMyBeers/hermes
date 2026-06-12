@@ -77,3 +77,35 @@ def test_failed_outbox_does_not_count_as_reply(tmp_path: Path):
     results = find_stale_threads(conn, days=5)
     assert len(results) == 1
     assert results[0].uid == 1
+
+
+def test_find_stale_pipeline_waiting_on_reply(tmp_path):
+    """Rows in lead/replied/quoted where we wrote last and N+ days passed."""
+    from datetime import datetime, timedelta, timezone
+    from hermes.db import connect, migrate
+    from hermes.pipeline.store import upsert_lead, set_stage
+    from hermes.stale.check import find_stale_pipeline
+
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    old = (datetime.now(timezone.utc) - timedelta(days=6)).isoformat()
+    fresh = datetime.now(timezone.utc).isoformat()
+
+    # stale: replied 6 days ago, no inbound since
+    upsert_lead(db, "slow@x.com", display_name="Slow", source="direct")
+    db.execute("UPDATE pipeline SET stage='replied', last_outbound=? WHERE contact_email='slow@x.com'", (old,))
+    # not stale: they answered after our last outbound
+    upsert_lead(db, "chatty@x.com", display_name="Chatty", source="direct")
+    db.execute("UPDATE pipeline SET stage='replied', last_outbound=?, last_inbound=? WHERE contact_email='chatty@x.com'", (old, fresh))
+    # not stale: outbound recent
+    upsert_lead(db, "recent@x.com", display_name="Recent", source="direct")
+    db.execute("UPDATE pipeline SET stage='quoted', last_outbound=? WHERE contact_email='recent@x.com'", (fresh,))
+    # not stale: active stage is out of scope
+    upsert_lead(db, "won@x.com", display_name="Won", source="direct")
+    set_stage(db, "won@x.com", "active")
+    db.execute("UPDATE pipeline SET last_outbound=? WHERE contact_email='won@x.com'", (old,))
+    db.commit()
+
+    rows = find_stale_pipeline(db, days=4)
+    assert [r.contact_email for r in rows] == ["slow@x.com"]
+    assert rows[0].stage == "replied"
+    assert rows[0].days_waiting >= 5
