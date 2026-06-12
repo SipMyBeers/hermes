@@ -55,7 +55,13 @@ def classify_llm(
         subject=str(msg.get("Subject", "")),
         body=_body_text(msg)[:1500],
     )
-    payload = {"model": model, "prompt": prompt, "stream": False, "format": "json"}
+    # think=False: qwen3 is a thinking model; without this Ollama spends the
+    # whole budget on hidden reasoning and returns an empty `response` field —
+    # the source of the v1 "llm response unparseable: ''" log spam.
+    payload = {
+        "model": model, "prompt": prompt, "stream": False,
+        "format": "json", "think": False,
+    }
     last_err = ""
     for attempt in range(retries + 1):
         try:
