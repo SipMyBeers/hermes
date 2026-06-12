@@ -4,10 +4,10 @@ set -euo pipefail
 PROJECT_DIR="${HOME}/Projects/hermes"
 CFG_DIR="${HOME}/.config/hermes"
 STATE_DIR="${HOME}/.hermes"
-LAUNCH_DIR="${HOME}/Library/LaunchAgents"
+LAUNCH_DIR="/Library/LaunchDaemons"
 
 echo "==> creating dirs"
-mkdir -p "${CFG_DIR}" "${STATE_DIR}/logs" "${STATE_DIR}/invoices" "${LAUNCH_DIR}"
+mkdir -p "${CFG_DIR}" "${STATE_DIR}/logs" "${STATE_DIR}/invoices"
 chmod 700 "${CFG_DIR}"
 
 echo "==> ensuring uv"
@@ -68,17 +68,22 @@ if grep -q "REPLACE_ME" "${CFG_DIR}/secrets.toml"; then
   exit 1
 fi
 
-echo "==> installing launchd plists"
-# Use launchctl load -w (older API) instead of bootstrap. The bootstrap
-# command requires a GUI domain which fails over SSH (Input/output error).
-# load -w works in any session and persists the plist enabled state.
+echo "==> installing launchd daemons (system domain)"
+# System LaunchDaemons (not per-user LaunchAgents): they start at boot with
+# no GUI login required. v1 used `launchctl load -w` into the SSH session's
+# user domain, which evaporated on reboot — the cause of the May 2026 silent
+# outage. Plists carry UserName=macmini so jobs still run unprivileged.
 for plist in ops/launchd/com.beers.hermes-*.plist; do
   name="$(basename "$plist")"
-  cp -f "$plist" "${LAUNCH_DIR}/${name}"
-  launchctl unload "${LAUNCH_DIR}/${name}" 2>/dev/null || true
-  launchctl load -w "${LAUNCH_DIR}/${name}"
-  echo "    loaded ${name}"
+  sudo cp -f "$plist" "${LAUNCH_DIR}/${name}"
+  sudo chown root:wheel "${LAUNCH_DIR}/${name}"
+  sudo chmod 644 "${LAUNCH_DIR}/${name}"
+  sudo launchctl bootout "system/${name%.plist}" 2>/dev/null || true
+  sudo launchctl bootstrap system "${LAUNCH_DIR}/${name}"
+  echo "    bootstrapped ${name}"
 done
+# Remove old per-user agents so jobs don't double-run after a GUI login.
+rm -f "${HOME}/Library/LaunchAgents/com.beers.hermes-"*.plist
 
 echo "==> done"
 echo "logs: ${STATE_DIR}/logs/"

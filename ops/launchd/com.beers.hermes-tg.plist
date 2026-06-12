@@ -7,6 +7,7 @@
   <array>
     <string>/Users/macmini/Projects/hermes/.venv/bin/hermes-tg</string>
   </array>
+  <key>UserName</key>          <string>macmini</string>
   <key>WorkingDirectory</key>  <string>/Users/macmini/Projects/hermes</string>
   <key>RunAtLoad</key>         <true/>
   <key>KeepAlive</key>         <true/>
@@ -15,6 +16,7 @@
   <key>StandardErrorPath</key> <string>/Users/macmini/.hermes/logs/tg.log</string>
   <key>EnvironmentVariables</key>
   <dict>
+    <key>HOME</key><string>/Users/macmini</string>
     <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
     <key>DYLD_FALLBACK_LIBRARY_PATH</key><string>/opt/homebrew/lib</string>
   </dict>
