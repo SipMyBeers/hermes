@@ -465,3 +465,14 @@ def test_beat_upserts(tmp_path):
     second = conn.execute("SELECT ts FROM heartbeats WHERE component='hermes-mail'").fetchone()[0]
     assert rows == 1
     assert second >= first
+
+
+def test_kv_get_set(tmp_path):
+    from hermes.db import connect, migrate, kv_get, kv_set
+    conn = connect(tmp_path / "t.sqlite")
+    migrate(conn)
+    assert kv_get(conn, "sent_anchor", "0") == "0"
+    kv_set(conn, "sent_anchor", "1234")
+    assert kv_get(conn, "sent_anchor", "0") == "1234"
+    kv_set(conn, "sent_anchor", "1300")
+    assert kv_get(conn, "sent_anchor", "0") == "1300"

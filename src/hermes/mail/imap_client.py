@@ -44,6 +44,11 @@ class ImapClient:
         uids = data[0].decode().split()
         return max((int(u) for u in uids), default=0)
 
+    def set_folder(self, name: str) -> None:
+        """Switch the IMAP selected folder (e.g. '[Gmail]/Sent Mail')."""
+        assert self._box, "call connect() first"
+        self._box.folder.set(name)
+
     def apply_label(self, uid: int, label: str) -> None:
         """Apply a Gmail label via the X-GM-LABELS IMAP extension."""
         assert self._box, "call connect() first"

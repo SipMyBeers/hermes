@@ -52,7 +52,10 @@ def _match_addr(addr: str, clients: Mapping[str, ClientConfig]) -> str | None:
 def infer_client(msg: Message, clients: Mapping[str, ClientConfig]) -> str | None:
     """Return the client key this partner thread belongs to, or None."""
     # 1. Participants.
+    # NB: getaddresses() in Python 3.12 strict mode collapses the whole
+    # result to [('','')] if ANY list element is an empty string — filter first.
     participant_headers = [str(msg.get(h, "")) for h in ("To", "Cc", "From")]
+    participant_headers = [h for h in participant_headers if h]
     for _, addr in getaddresses(participant_headers):
         if not addr:
             continue

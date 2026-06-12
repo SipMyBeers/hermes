@@ -21,6 +21,7 @@ from hermes.db import beat, connect, migrate
 from hermes.digest.enrich import summarize_for_brief
 from hermes.extract.lead import detect_lead, LeadSignal
 from hermes.mail.imap_client import ImapClient
+from hermes.mail.outbound import process_sent
 from hermes.mail.thread import thread_key_for
 from hermes.telegram.client import TelegramClient
 from hermes.telegram.keyboards import lead_card, urgent_card
@@ -390,6 +391,12 @@ def run_loop(cfg: Config, db: sqlite3.Connection, dry_run: bool = False) -> None
             since = _bootstrap_anchor(db, imap)
             for fetched in imap.fetch_recent(since_uid=since, limit=200):
                 _process_fetched(fetched, db, cfg, imap, dry_run)
+            # Phase 1: file outbound mail by client. Wrapped — Sent filing
+            # must never take down inbound triage.
+            try:
+                process_sent(db, cfg, imap)
+            except Exception as e:
+                logger.warning("sent watcher failed: {}", e)
             beat(db, "hermes-mail")
             try:
                 imap.idle(timeout=29 * 60)

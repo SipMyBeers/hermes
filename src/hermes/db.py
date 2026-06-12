@@ -2,7 +2,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 # Note: databases migrated from a v0/initial install may still have the old
 # `idx_messages_received` single-column index hanging around alongside the
@@ -202,6 +202,13 @@ CREATE TABLE IF NOT EXISTS heartbeats (
 );
 """
 
+_SCHEMA_V10 = """
+CREATE TABLE IF NOT EXISTS kv (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+"""
+
 
 def _migrate_v7(conn: sqlite3.Connection) -> None:
     """Phase M.2: widen actions.source_kind CHECK to include 'feed_item'.
@@ -337,6 +344,9 @@ def migrate(conn: sqlite3.Connection) -> None:
     if current < 9:
         # v8 -> v9: heartbeats table for the Phase-0 watchdog. Additive.
         conn.executescript(_SCHEMA_V9)
+    if current < 10:
+        # v9 -> v10: kv table (Phase 1 sent-folder anchor). Additive.
+        conn.executescript(_SCHEMA_V10)
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 
@@ -347,5 +357,19 @@ def beat(conn: sqlite3.Connection, component: str) -> None:
         "INSERT INTO heartbeats (component, ts) VALUES (?, ?) "
         "ON CONFLICT(component) DO UPDATE SET ts=excluded.ts",
         (component, datetime.now(timezone.utc).isoformat()),
+    )
+    conn.commit()
+
+
+def kv_get(conn: sqlite3.Connection, key: str, default: str) -> str:
+    row = conn.execute("SELECT value FROM kv WHERE key=?", (key,)).fetchone()
+    return row[0] if row else default
+
+
+def kv_set(conn: sqlite3.Connection, key: str, value: str) -> None:
+    conn.execute(
+        "INSERT INTO kv (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (key, value),
     )
     conn.commit()
