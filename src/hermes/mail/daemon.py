@@ -16,7 +16,7 @@ from hermes.classifier.rules import classify as rule_classify, ClientHint
 from hermes.classifier.llm import classify_llm, LLMResult
 from hermes.classifier.drafter import draft_reply
 from hermes.classifier.learned import is_learned_promo
-from hermes.db import connect, migrate
+from hermes.db import beat, connect, migrate
 from hermes.digest.enrich import summarize_for_brief
 from hermes.extract.lead import detect_lead, LeadSignal
 from hermes.mail.imap_client import ImapClient
@@ -347,9 +347,11 @@ def run_loop(cfg: Config, db: sqlite3.Connection, dry_run: bool = False) -> None
     imap.connect()
     try:
         while True:
+            beat(db, "hermes-mail")
             since = _bootstrap_anchor(db, imap)
             for fetched in imap.fetch_recent(since_uid=since, limit=200):
                 _process_fetched(fetched, db, cfg, imap, dry_run)
+            beat(db, "hermes-mail")
             try:
                 imap.idle(timeout=29 * 60)
             except Exception as e:

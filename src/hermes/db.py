@@ -2,7 +2,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 # Note: databases migrated from a v0/initial install may still have the old
 # `idx_messages_received` single-column index hanging around alongside the
@@ -195,6 +195,13 @@ CREATE TABLE IF NOT EXISTS learned_promos (
 CREATE INDEX IF NOT EXISTS idx_learned_promos_domain ON learned_promos(sender_domain);
 """
 
+_SCHEMA_V9 = """
+CREATE TABLE IF NOT EXISTS heartbeats (
+    component TEXT PRIMARY KEY,
+    ts        TEXT NOT NULL
+);
+"""
+
 
 def _migrate_v7(conn: sqlite3.Connection) -> None:
     """Phase M.2: widen actions.source_kind CHECK to include 'feed_item'.
@@ -327,4 +334,18 @@ def migrate(conn: sqlite3.Connection) -> None:
         # and actions for same-thread same-sender consolidation. Additive
         # ALTERs only — no table rewrites.
         _migrate_v8(conn)
+    if current < 9:
+        # v8 -> v9: heartbeats table for the Phase-0 watchdog. Additive.
+        conn.executescript(_SCHEMA_V9)
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+
+def beat(conn: sqlite3.Connection, component: str) -> None:
+    """Upsert a liveness timestamp; read by hermes-watchdog."""
+    from datetime import datetime, timezone
+    conn.execute(
+        "INSERT INTO heartbeats (component, ts) VALUES (?, ?) "
+        "ON CONFLICT(component) DO UPDATE SET ts=excluded.ts",
+        (component, datetime.now(timezone.utc).isoformat()),
+    )
+    conn.commit()

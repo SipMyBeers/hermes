@@ -440,3 +440,28 @@ def test_messages_can_store_raw_email_blob(tmp_path: Path):
     )
     row = conn.execute("SELECT raw_email FROM messages WHERE uid=1").fetchone()
     assert row[0] == blob
+
+
+def test_migrate_v9_creates_heartbeats(tmp_path):
+    from hermes.db import connect, migrate
+    conn = connect(tmp_path / "t.sqlite")
+    migrate(conn)
+    conn.execute(
+        "INSERT INTO heartbeats (component, ts) VALUES ('hermes-mail', '2026-06-11T00:00:00+00:00') "
+        "ON CONFLICT(component) DO UPDATE SET ts=excluded.ts"
+    )
+    row = conn.execute("SELECT ts FROM heartbeats WHERE component='hermes-mail'").fetchone()
+    assert row[0].startswith("2026-06-11")
+
+
+def test_beat_upserts(tmp_path):
+    from hermes.db import connect, migrate, beat
+    conn = connect(tmp_path / "t.sqlite")
+    migrate(conn)
+    beat(conn, "hermes-mail")
+    first = conn.execute("SELECT ts FROM heartbeats WHERE component='hermes-mail'").fetchone()[0]
+    beat(conn, "hermes-mail")
+    rows = conn.execute("SELECT COUNT(*) FROM heartbeats").fetchone()[0]
+    second = conn.execute("SELECT ts FROM heartbeats WHERE component='hermes-mail'").fetchone()[0]
+    assert rows == 1
+    assert second >= first
