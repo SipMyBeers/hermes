@@ -50,3 +50,42 @@ def test_imap_client_move_to_trash_uses_gmail_trash_label():
     assert rm_args[0] == "STORE"
     assert rm_args[2] == "-X-GM-LABELS"
     assert "Inbox" in rm_args[3]
+
+
+class _FakeIdle:
+    def __init__(self, responses):
+        self._responses = responses
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def poll(self, timeout):
+        return self._responses
+
+
+class _FakeBox:
+    def __init__(self, responses):
+        self.idle = _FakeIdle(responses)
+
+
+def test_idle_handles_bytes_responses():
+    """idle.poll() returns bytes lines from imaplib; idle() must not TypeError."""
+    ic = ImapClient(_gmail())
+    ic._box = _FakeBox([b"* 42 EXISTS", b"* 1 RECENT"])
+    assert ic.idle(timeout=1) is True
+
+
+def test_idle_handles_str_responses():
+    """Defensive: also accept str lines (imap_tools version drift)."""
+    ic = ImapClient(_gmail())
+    ic._box = _FakeBox(["* 42 EXISTS"])
+    assert ic.idle(timeout=1) is True
+
+
+def test_idle_no_new_mail_returns_false():
+    ic = ImapClient(_gmail())
+    ic._box = _FakeBox([b"* OK still here"])
+    assert ic.idle(timeout=1) is False

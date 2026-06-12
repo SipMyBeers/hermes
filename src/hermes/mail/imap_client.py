@@ -74,7 +74,12 @@ class ImapClient:
         # imap_tools idle context
         with self._box.idle as idle:
             responses = idle.poll(timeout=timeout)
-        return any("EXISTS" in r for r in responses)
+        # imaplib hands back bytes lines; older imap_tools returned str.
+        decoded = [
+            r.decode("ascii", errors="replace") if isinstance(r, (bytes, bytearray)) else str(r)
+            for r in responses
+        ]
+        return any("EXISTS" in r for r in decoded)
 
 
 @contextmanager
