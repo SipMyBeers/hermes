@@ -45,3 +45,17 @@ values = [
     "1655 S Elm St, Unit 330",
     "Canby, OR 97013",
 ]
+
+# ---- Phase 1: routing-only clients (no billing yet) + partners ----
+
+[partners]
+josh = ["magic@rainbowlasers.com", "joshualogan@gmail.com"]
+
+[tbn]
+domain = "tbn.net"
+contact_email = "todd@tbn.net"
+active = true
+
+[maxcrofton]
+contact_email = "maxcrofton@gmail.com"
+active = true

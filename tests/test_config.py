@@ -313,3 +313,65 @@ active = false
     assert set(cfg.clients.keys()) == {"boarhog", "acme"}
     assert cfg.clients["acme"].active is False
     assert cfg.clients["acme"].billing_amount_cents == 75000
+
+
+_MIN_SECRETS = """
+[gmail]
+imap_user = "u@g.com"
+imap_app_password = "x"
+smtp_user = "u@g.com"
+smtp_app_password = "x"
+from_address = "U <u@g.com>"
+reply_to = "U <u@g.com>"
+
+[telegram]
+bot_token = "1:A"
+chat_id = 0
+"""
+
+
+def test_non_billing_client_parses_with_defaults(tmp_path: Path):
+    """Phase 1: routing-only clients need just contact_email + active."""
+    secrets = tmp_path / "secrets.toml"
+    secrets.write_text(_MIN_SECRETS)
+    clients = tmp_path / "clients.toml"
+    clients.write_text("""
+[maxcrofton]
+contact_email = "maxcrofton@gmail.com"
+active = true
+""")
+    cfg = load_config(secrets_path=secrets, clients_path=clients)
+    c = cfg.clients["maxcrofton"]
+    assert c.contact_email == "maxcrofton@gmail.com"
+    assert c.domain == ""
+    assert c.billing_amount_cents == 0
+    assert c.billing_terms == ""
+    assert c.service_description == ""
+
+
+def test_partners_table_parses_and_is_not_a_client(tmp_path: Path):
+    secrets = tmp_path / "secrets.toml"
+    secrets.write_text(_MIN_SECRETS)
+    clients = tmp_path / "clients.toml"
+    clients.write_text("""
+[partners]
+josh = ["Magic@RainbowLasers.com", "joshualogan@gmail.com"]
+
+[tbn]
+domain = "tbn.net"
+contact_email = "todd@tbn.net"
+active = true
+""")
+    cfg = load_config(secrets_path=secrets, clients_path=clients)
+    assert "partners" not in cfg.clients
+    assert "tbn" in cfg.clients
+    assert cfg.partners["josh"] == ("magic@rainbowlasers.com", "joshualogan@gmail.com")
+
+
+def test_partners_default_empty(tmp_path: Path):
+    secrets = tmp_path / "secrets.toml"
+    secrets.write_text(_MIN_SECRETS)
+    clients = tmp_path / "clients.toml"
+    clients.write_text("# empty")
+    cfg = load_config(secrets_path=secrets, clients_path=clients)
+    assert dict(cfg.partners) == {}

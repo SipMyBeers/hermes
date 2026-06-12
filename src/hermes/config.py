@@ -29,12 +29,14 @@ class TelegramConfig:
 @dataclass(frozen=True)
 class ClientConfig:
     name: str
-    domain: str
     contact_email: str
-    billing_amount_cents: int
-    billing_terms: str
-    service_description: str
     active: bool
+    # Routing-only clients (Phase 1) carry just contact_email (+ optionally
+    # domain); billing fields stay zero/empty and the invoice job skips them.
+    domain: str = ""
+    billing_amount_cents: int = 0
+    billing_terms: str = ""
+    service_description: str = ""
     # Optional fields for invoice rendering. Defaults reproduce the v1
     # generic invoice; override per-client to produce branded invoices.
     invoice_prefix: str = "INV"
@@ -94,6 +96,11 @@ class Config:
     mail: MailConfig = field(default_factory=MailConfig)
     ingest: IngestConfig = field(default_factory=IngestConfig)
     user: UserConfig = field(default_factory=UserConfig)
+    # Partners are relationship-holders (e.g. uncle Josh) who CC/forward
+    # client mail. Keyed by partner name -> lowercased addresses.
+    partners: Mapping[str, tuple[str, ...]] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
 
 
 def _require_bool(value, *, key: str, source: str) -> bool:
@@ -201,8 +208,18 @@ def load_config(
     except (TypeError, AttributeError) as e:
         raise ConfigError(f"{secrets_path}: malformed [user] section - {e}") from e
 
+    # [partners] is a reserved table, not a client: name -> list of addresses.
+    partners: dict[str, tuple[str, ...]] = {}
+    try:
+        for pname, addrs in c.get("partners", {}).items():
+            partners[str(pname)] = tuple(str(a).lower() for a in addrs)
+    except (TypeError, AttributeError) as e:
+        raise ConfigError(f"{clients_path}: malformed [partners] section - {e}") from e
+
     clients: dict[str, ClientConfig] = {}
     for key, body in c.items():
+        if key == "partners":
+            continue
         try:
             payment_methods_raw = body.get("payment_methods", [])
             payment_methods: tuple[tuple[str, tuple[str, ...]], ...] = tuple(
@@ -211,11 +228,11 @@ def load_config(
             )
             clients[key] = ClientConfig(
                 name=key,
-                domain=body["domain"],
+                domain=str(body.get("domain", "")),
                 contact_email=body["contact_email"],
-                billing_amount_cents=int(body["billing_amount_cents"]),
-                billing_terms=body["billing_terms"],
-                service_description=body["service_description"],
+                billing_amount_cents=int(body.get("billing_amount_cents", 0)),
+                billing_terms=str(body.get("billing_terms", "")),
+                service_description=str(body.get("service_description", "")),
                 active=_require_bool(
                     body["active"],
                     key="active",
@@ -255,4 +272,5 @@ def load_config(
         mail=mail_cfg,
         ingest=ingest_cfg,
         user=user_cfg,
+        partners=MappingProxyType(partners),
     )
