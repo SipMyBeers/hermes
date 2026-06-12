@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.header import decode_header, make_header
 from email.message import Message
-from email.utils import parsedate_to_datetime
+from email.utils import getaddresses, parsedate_to_datetime
 from pathlib import Path
 import sqlite3
 import time
@@ -19,7 +19,11 @@ from hermes.classifier.learned import is_learned_promo
 from hermes.classifier.partner import infer_client
 from hermes.db import beat, connect, migrate
 from hermes.digest.enrich import summarize_for_brief
-from hermes.extract.lead import detect_lead, LeadSignal
+from hermes.extract.lead import (
+    LeadSignal, confirm_lead_llm, detect_form_lead, detect_lead,
+    detect_partner_lead,
+)
+from hermes.pipeline.store import touch_inbound, upsert_lead
 from hermes.mail.imap_client import ImapClient
 from hermes.mail.outbound import process_sent
 from hermes.mail.thread import thread_key_for
@@ -131,6 +135,58 @@ def _persist_lead(db: sqlite3.Connection, uid: int, lead: LeadSignal) -> None:
             datetime.now(timezone.utc).isoformat(),
         ),
     )
+
+
+def _lead_contact(lead: LeadSignal, msg: Message) -> tuple[str, str]:
+    """(display_name, addr) for the pipeline row. Form submissions carry the
+    visitor in Reply-To when the mailer sets it; otherwise parse the lead's
+    sender string."""
+    reply_to = str(msg.get("Reply-To", "") or "")
+    candidates = getaddresses([reply_to]) if reply_to else []
+    candidates += getaddresses([lead.sender])
+    for name, addr in candidates:
+        if addr:
+            return (name or addr.split("@", 1)[0], addr.lower())
+    return ("", "")
+
+
+def _handle_lead(
+    lead: LeadSignal,
+    source: str,
+    uid: int,
+    msg: Message,
+    db: sqlite3.Connection,
+    cfg: Config,
+    imap: ImapClient,
+    message_id: str,
+    subject: str,
+) -> None:
+    """Shared lead flow: persist + pipeline row + label + Telegram ping."""
+    _persist_lead(db, uid, lead)
+    name, addr = _lead_contact(lead, msg)
+    if addr:
+        try:
+            upsert_lead(db, addr, display_name=name, source=source)
+        except Exception as e:
+            logger.error("pipeline upsert failed for {}: {}", addr, e)
+    try:
+        imap.apply_label(uid, "Hermes/Lead")
+    except Exception as e:
+        logger.error("imap lead-label failed uid={} err={}", uid, e)
+    try:
+        # Phase N.2: lead pings carry a Gmail jump-link too so the user can
+        # scan the original thread in Gmail web before drafting a reply.
+        from hermes.mail.gmail_link import gmail_url_for
+        gmail_url = gmail_url_for(message_id)
+        _telegram(cfg).send_message(
+            f"🆕 *New lead* ({source})\n"
+            f"From: {lead.sender}\n"
+            f"Subject: {subject[:140]}\n"
+            f"Why: {lead.reason}",
+            reply_markup=lead_card(uid, gmail_url=gmail_url),
+        )
+    except Exception as e:
+        logger.warning("lead telegram ping failed: {}", e)
 
 
 def _telegram(cfg: Config) -> TelegramClient:
@@ -301,36 +357,46 @@ def process_message(
         except Exception as e:
             logger.warning("enrichment + action persist failed for uid={}: {}", uid, e)
 
+    # Pipeline: any non-promo inbound from a tracked contact freshens
+    # last_inbound (stale nudges key off this).
+    if classification.label != "promo":
+        try:
+            for _, addr in getaddresses([str(msg.get("From", ""))]):
+                if addr:
+                    touch_inbound(db, addr)
+        except Exception as e:
+            logger.warning("pipeline touch_inbound failed: {}", e)
+
     # Lead detection runs alongside classification, not in place of it.
-    # A message can be both classified as 'review' AND a lead — both labels apply.
-    # Skipped for promos since they're being trashed/archived anyway.
-    # Skipped for client threads too (Phase 1): a resolved project thread is
-    # ongoing work, not a prospect — "quote"/"proposal" words are routine there.
-    if classification.label not in ("promo", "client"):
-        known_domains = {c.domain.lower() for c in cfg.clients.values() if c.domain}
-        lead = detect_lead(msg, known_client_domains=known_domains)
-        if lead.is_lead:
-            _persist_lead(db, uid, lead)
-            try:
-                imap.apply_label(uid, "Hermes/Lead")
-            except Exception as e:
-                logger.error("imap lead-label failed uid={} err={}", uid, e)
-            try:
-                subj = subject[:140]
-                # Phase N.2: lead pings carry a Gmail jump-link too so
-                # the user can scan the original thread in Gmail web
-                # before deciding whether to draft a reply.
-                from hermes.mail.gmail_link import gmail_url_for
-                gmail_url = gmail_url_for(message_id)
-                _telegram(cfg).send_message(
-                    f"🆕 *New lead*\n"
-                    f"From: {lead.sender}\n"
-                    f"Subject: {subj}\n"
-                    f"Why: {lead.reason}",
-                    reply_markup=lead_card(uid, gmail_url=gmail_url),
-                )
-            except Exception as e:
-                logger.warning("lead telegram ping failed: {}", e)
+    # Three sources (Phase 2), first hit wins:
+    #   form  — deterministic: mail addressed to the dedicated leads address;
+    #   partner — a partner forward whose original sender is a stranger;
+    #   direct  — unknown sender + outreach regex, gated by an LLM confirm.
+    # Promos never; resolved client threads never (quote/proposal words are
+    # routine on project threads).
+    if detect_form_lead(msg, cfg.leads.form_address):
+        lead = LeadSignal(
+            is_lead=True, sender=sender,
+            sender_domain=sender.split("@", 1)[1].rstrip(">") if "@" in sender else "",
+            reason="contact-form submission", matches=("form",),
+        )
+        _handle_lead(lead, "form", uid, msg, db, cfg, imap, message_id, subject)
+    elif classification.label not in ("promo", "client"):
+        ignore = set(cfg.leads.ignore_domains)
+        handled = False
+        if classification.reason == "partner thread, no client match":
+            plead = detect_partner_lead(
+                msg, cfg.clients, partner_addrs=_partner_addrs(cfg),
+                ignore_domains=ignore,
+            )
+            if plead.is_lead:
+                _handle_lead(plead, "partner", uid, msg, db, cfg, imap, message_id, subject)
+                handled = True
+        if not handled:
+            known_domains = {c.domain.lower() for c in cfg.clients.values() if c.domain}
+            lead = detect_lead(msg, known_client_domains=known_domains, ignore_domains=ignore)
+            if lead.is_lead and confirm_lead_llm(msg):
+                _handle_lead(lead, "direct", uid, msg, db, cfg, imap, message_id, subject)
 
 
 def _last_uid(db: sqlite3.Connection) -> int:

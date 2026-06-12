@@ -705,3 +705,124 @@ def test_client_contact_email_sender_routes_and_archives(tmp_path):
     process_message(uid=22, msg=m, db=db, cfg=_p1_cfg(), imap=fake_imap, llm_classifier=None, drafter=None)
     fake_imap.apply_label.assert_called_once_with(22, "Hermes/Client/maxcrofton")
     fake_imap.archive.assert_called_once_with(22)
+
+
+@pytest.fixture()
+def _confirm_yes(monkeypatch):
+    monkeypatch.setattr("hermes.mail.daemon.confirm_lead_llm", lambda msg: True)
+
+
+def _pipeline_rows(db):
+    return list(db.execute(
+        "SELECT contact_email, stage, source FROM pipeline ORDER BY contact_email"))
+
+
+def test_direct_lead_enters_pipeline(tmp_path, monkeypatch, _confirm_yes):
+    from hermes.db import connect, migrate
+    db = connect(tmp_path / "t.sqlite")
+    migrate(db)
+    raw = (
+        b"From: Casey <casey@unknown.io>\r\n"
+        b"To: dz@gmail.com\r\n"
+        b"Subject: Project inquiry\r\n"
+        b"Message-ID: <lead-p2@unknown.io>\r\n"
+        b"\r\n"
+        b"Saw your portfolio. Looking to hire for a project. Have a budget.\r\n"
+    )
+    msg = message_from_bytes(raw)
+    fake_tg = MagicMock()
+    monkeypatch.setattr("hermes.mail.daemon._telegram", lambda cfg: fake_tg)
+    process_message(uid=300, msg=msg, db=db, cfg=_cfg(), imap=MagicMock(),
+                    llm_classifier=None, drafter=None)
+    assert _pipeline_rows(db) == [("casey@unknown.io", "lead", "direct")]
+
+
+def test_direct_lead_rejected_by_llm_confirm(tmp_path, monkeypatch):
+    from hermes.db import connect, migrate
+    db = connect(tmp_path / "t.sqlite")
+    migrate(db)
+    monkeypatch.setattr("hermes.mail.daemon.confirm_lead_llm", lambda msg: False)
+    raw = (
+        b"From: Casey <casey@unknown.io>\r\n"
+        b"To: dz@gmail.com\r\n"
+        b"Subject: Project inquiry\r\n"
+        b"Message-ID: <lead-p2b@unknown.io>\r\n"
+        b"\r\n"
+        b"Looking to hire for a project. Have a budget.\r\n"
+    )
+    fake_tg = MagicMock()
+    monkeypatch.setattr("hermes.mail.daemon._telegram", lambda cfg: fake_tg)
+    process_message(uid=301, msg=message_from_bytes(raw), db=db, cfg=_cfg(),
+                    imap=MagicMock(), llm_classifier=None, drafter=None)
+    assert _pipeline_rows(db) == []
+    fake_tg.send_message.assert_not_called()
+
+
+def test_form_lead_detected_and_pinged(tmp_path, monkeypatch):
+    from dataclasses import replace as dc_replace
+    from hermes.config import LeadsConfig
+    from hermes.db import connect, migrate
+    db = connect(tmp_path / "t.sqlite")
+    migrate(db)
+    cfg = dc_replace(_cfg(), leads=LeadsConfig(form_address="leads@ranger-beers.com"))
+    raw = (
+        b"From: Site Visitor <visitor@dentist.com>\r\n"
+        b"To: leads@ranger-beers.com\r\n"
+        b"Subject: New contact form submission\r\n"
+        b"Message-ID: <form-1@ranger-beers.com>\r\n"
+        b"\r\n"
+        b"Name: Pat\r\nMessage: please call me\r\n"
+    )
+    fake_imap = MagicMock()
+    fake_tg = MagicMock()
+    monkeypatch.setattr("hermes.mail.daemon._telegram", lambda cfg: fake_tg)
+    process_message(uid=302, msg=message_from_bytes(raw), db=db, cfg=cfg,
+                    imap=fake_imap, llm_classifier=None, drafter=None)
+    assert _pipeline_rows(db) == [("visitor@dentist.com", "lead", "form")]
+    labels = [c.args[1] for c in fake_imap.apply_label.call_args_list]
+    assert "Hermes/Lead" in labels
+    fake_tg.send_message.assert_called_once()
+
+
+def test_partner_forward_lead_enters_pipeline(tmp_path, monkeypatch):
+    from hermes.db import connect, migrate
+    db = connect(tmp_path / "t.sqlite")
+    migrate(db)
+    body = (
+        "---------- Forwarded message ---------\n"
+        "From: New Prospect <prospect@dentist-office.com>\n"
+        "Subject: Website inquiry\n\nHi, I need a site built.\n"
+    )
+    from email.message import EmailMessage
+    m = EmailMessage()
+    m["From"] = "Rainbow Lasers <magic@rainbowlasers.com>"
+    m["To"] = "dzbeers747@gmail.com"
+    m["Subject"] = "Fwd: Website inquiry"
+    m["Message-ID"] = "<fwd-lead@rainbowlasers.com>"
+    m.set_content(body)
+    fake_tg = MagicMock()
+    monkeypatch.setattr("hermes.mail.daemon._telegram", lambda cfg: fake_tg)
+    process_message(uid=303, msg=m, db=db, cfg=_p1_cfg(), imap=MagicMock(),
+                    llm_classifier=None, drafter=None)
+    assert _pipeline_rows(db) == [("prospect@dentist-office.com", "lead", "partner")]
+
+
+def test_inbound_from_pipeline_contact_touches_last_inbound(tmp_path, monkeypatch, _confirm_yes):
+    from hermes.db import connect, migrate
+    from hermes.pipeline.store import upsert_lead
+    db = connect(tmp_path / "t.sqlite")
+    migrate(db)
+    upsert_lead(db, "casey@unknown.io", display_name="Casey", source="direct")
+    raw = (
+        b"From: Casey <casey@unknown.io>\r\n"
+        b"To: dz@gmail.com\r\n"
+        b"Subject: Re: thoughts\r\n"
+        b"Message-ID: <re-1@unknown.io>\r\n"
+        b"\r\n"
+        b"Just checking in.\r\n"
+    )
+    monkeypatch.setattr("hermes.mail.daemon._telegram", lambda cfg: MagicMock())
+    process_message(uid=304, msg=message_from_bytes(raw), db=db, cfg=_cfg(),
+                    imap=MagicMock(), llm_classifier=None, drafter=None)
+    row = db.execute("SELECT last_inbound FROM pipeline WHERE contact_email='casey@unknown.io'").fetchone()
+    assert row[0] is not None
