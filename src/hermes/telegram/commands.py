@@ -29,6 +29,7 @@ If you'd rather type:
 • `/draft <uid>` — draft a reply for a saved email.
 • `/pipeline` — prospect/client board by stage.
 • `/stage <who> <stage>` — move someone (lead/replied/quoted/active/invoiced/closed).
+• `/followup <who>` — ready-to-send follow-up emails + voicemail scripts.
 
 Slash-command index for power users:
 `/status` `/approve` `/reject` `/done` `/snooze` `/dismiss` `/retry`
@@ -112,6 +113,7 @@ def handle_update(
         "/draft": _cmd_draft,
         "/pipeline": _cmd_pipeline,
         "/stage": _cmd_stage,
+        "/followup": _cmd_followup,
         "/feeds": _cmd_feeds,
         "/start": _cmd_start,
         "/help": lambda *a: tg.send_message(HELP_TEXT),
@@ -510,6 +512,87 @@ def _cmd_stage(args, cfg, db, tg):
         tg.send_message(str(e))
         return
     tg.send_message(f"✅ {email} → *{stage}*")
+
+
+def _resolve_pipeline_contact(db, fragment: str):
+    """(email, display_name, project) via the store's fragment matching."""
+    from hermes.pipeline.store import set_stage  # noqa: F401  (matching lives in store)
+    frag = fragment.lower()
+    exact = db.execute(
+        "SELECT contact_email, COALESCE(display_name,''), COALESCE(project,'') "
+        "FROM pipeline WHERE contact_email = ?", (frag,)
+    ).fetchall()
+    matches = exact
+    if not matches:
+        like = f"%{frag}%"
+        matches = db.execute(
+            "SELECT contact_email, COALESCE(display_name,''), COALESCE(project,'') "
+            "FROM pipeline WHERE contact_email LIKE ? "
+            "OR LOWER(COALESCE(display_name,'')) LIKE ? OR LOWER(COALESCE(project,'')) LIKE ?",
+            (like, like, like),
+        ).fetchall()
+    if not matches:
+        raise ValueError(f"no pipeline contact matches {fragment!r}")
+    if len(matches) > 1:
+        raise ValueError("ambiguous: " + ", ".join(m[0] for m in matches))
+    return matches[0]
+
+
+def _cmd_followup(args, cfg, db, tg):
+    """/followup <who>            — show 3 emails + 3 voicemail scripts
+       /followup <who> send <n>   — queue email option n to the outbox"""
+    from hermes.pipeline.followups import render_email_options, render_voicemail_options
+    if not args:
+        tg.send_message("Usage: /followup <email-or-name> — or /followup <who> send <1-3>")
+        return
+    send_idx = None
+    rest = list(args)
+    if len(rest) >= 2 and rest[-2].lower() == "send":
+        try:
+            send_idx = int(rest[-1])
+        except ValueError:
+            tg.send_message("Usage: /followup <who> send <1-3>")
+            return
+        rest = rest[:-2]
+    who = " ".join(rest)
+    try:
+        email, display_name, project = _resolve_pipeline_contact(db, who)
+    except ValueError as e:
+        tg.send_message(str(e))
+        return
+    first = (display_name.split() or [email.split("@", 1)[0]])[0]
+    hint = f"the {project} site" if project else "your site"
+    emails = render_email_options(first, project_hint=hint)
+
+    if send_idx is not None:
+        if not 1 <= send_idx <= len(emails):
+            tg.send_message(f"Pick 1-{len(emails)}")
+            return
+        title, subject, body = emails[send_idx - 1]
+        cur = db.execute(
+            "INSERT INTO outbox (kind, to_addr, subject, body, status, created_at) "
+            "VALUES ('reply', ?, ?, ?, 'queued', ?)",
+            (email, subject, body, datetime.now(timezone.utc).isoformat()),
+        )
+        db.commit()
+        tg.send_message(
+            f"Queued *{title}* follow-up to {email}.\n"
+            f"`/approve {cur.lastrowid}` to send · `/reject {cur.lastrowid}` to discard"
+        )
+        return
+
+    lines = [f"📨 *Follow-up options for {display_name or email}*\n"]
+    for i, (title, subject, body) in enumerate(emails, 1):
+        lines.append(f"*{i}. {title}* — _{subject}_")
+        lines.append(body)
+        lines.append("")
+    lines.append("📞 *Voicemail scripts*\n")
+    for i, (title, script) in enumerate(render_voicemail_options(first), 1):
+        lines.append(f"*{i}. {title}*")
+        lines.append(script)
+        lines.append("")
+    lines.append(f"`/followup {email} send 1` (or 2/3) to queue an email for /approve")
+    tg.send_message("\n".join(lines))
 
 
 def _cmd_feeds(args, cfg, db, tg):

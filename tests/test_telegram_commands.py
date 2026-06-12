@@ -957,3 +957,41 @@ def test_cmd_stage_reports_errors(tmp_path):
     update = {"update_id": 15, "message": {"chat": {"id": 42}, "text": "/stage"}}
     handle_update(update, _cfg(), db, tg)
     assert "Usage" in tg.send_message.call_args.args[0]
+
+
+def test_cmd_followup_renders_options_for_contact(tmp_path):
+    from hermes.pipeline.store import upsert_lead
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    upsert_lead(db, "pat@dentist.com", display_name="Pat Smith", source="form")
+    tg = MagicMock()
+    update = {"update_id": 20, "message": {"chat": {"id": 42}, "text": "/followup pat"}}
+    handle_update(update, _cfg(), db, tg)
+    text = tg.send_message.call_args.args[0]
+    assert "Pat" in text
+    assert "voicemail" in text.lower()
+    assert "/followup pat@dentist.com send" in text
+
+
+def test_cmd_followup_send_queues_outbox(tmp_path):
+    from hermes.pipeline.store import upsert_lead
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    upsert_lead(db, "pat@dentist.com", display_name="Pat Smith", source="form")
+    tg = MagicMock()
+    update = {"update_id": 21, "message": {"chat": {"id": 42},
+              "text": "/followup pat@dentist.com send 2"}}
+    handle_update(update, _cfg(), db, tg)
+    row = db.execute(
+        "SELECT kind, to_addr, status, subject FROM outbox ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert row[0] == "reply" and row[1] == "pat@dentist.com" and row[2] == "queued"
+    assert "Pat" not in row[3] or row[3]  # subject exists
+    confirm = tg.send_message.call_args.args[0]
+    assert "/approve" in confirm
+
+
+def test_cmd_followup_unknown_contact(tmp_path):
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    tg = MagicMock()
+    update = {"update_id": 22, "message": {"chat": {"id": 42}, "text": "/followup nobody"}}
+    handle_update(update, _cfg(), db, tg)
+    assert "no pipeline contact" in tg.send_message.call_args.args[0]

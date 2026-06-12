@@ -37,7 +37,9 @@ def _format_pipeline(rows: list[StalePipelineRow]) -> str:
     for r in rows[:15]:
         who = r.display_name or r.contact_email
         lines.append(f"*{who}* — {r.stage} · {r.days_waiting}d quiet")
-        hint = f"`/draft {r.last_inbound_uid}` to follow up" if r.last_inbound_uid else r.contact_email
+        hint = f"`/followup {r.contact_email}`"
+        if r.last_inbound_uid:
+            hint += f" · `/draft {r.last_inbound_uid}`"
         lines.append(f"   {hint}")
     return "\n".join(lines)
 
