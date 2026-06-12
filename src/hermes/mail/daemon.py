@@ -389,8 +389,10 @@ def run_loop(cfg: Config, db: sqlite3.Connection, dry_run: bool = False) -> None
         while True:
             beat(db, "hermes-mail")
             since = _bootstrap_anchor(db, imap)
+            batch = 0
             for fetched in imap.fetch_recent(since_uid=since, limit=200):
                 _process_fetched(fetched, db, cfg, imap, dry_run)
+                batch += 1
             # Phase 1: file outbound mail by client. Wrapped — Sent filing
             # must never take down inbound triage.
             try:
@@ -398,6 +400,12 @@ def run_loop(cfg: Config, db: sqlite3.Connection, dry_run: bool = False) -> None
             except Exception as e:
                 logger.warning("sent watcher failed: {}", e)
             beat(db, "hermes-mail")
+            if batch >= 200:
+                # Full batch means there's likely more backlog behind it.
+                # Loop immediately instead of IDLE-blocking until NEW mail
+                # arrives — otherwise a big backlog drains 200 per inbound.
+                logger.info("full batch ({}); continuing drain without idle", batch)
+                continue
             try:
                 imap.idle(timeout=29 * 60)
             except Exception as e:
