@@ -44,6 +44,12 @@ class ImapClient:
         uids = data[0].decode().split()
         return max((int(u) for u in uids), default=0)
 
+    def star(self, uid: int) -> None:
+        """Star a message (\\Flagged shows as Gmail's star)."""
+        assert self._box, "call connect() first"
+        self._box.client.uid("STORE", str(uid), "+FLAGS", "(\\Flagged)")
+        logger.debug("imap star uid={}", uid)
+
     def set_folder(self, name: str) -> None:
         """Switch the IMAP selected folder (e.g. '[Gmail]/Sent Mail')."""
         assert self._box, "call connect() first"

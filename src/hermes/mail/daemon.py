@@ -214,6 +214,26 @@ def process_message(
     llm_classifier: Callable[[Message], LLMResult] | None,
     drafter: Callable[[Message, str], str] | None,
 ) -> None:
+    # Hermes' own morning brief: label + star, never classify/archive/ping.
+    if msg.get("X-Hermes-Digest"):
+        try:
+            imap.apply_label(uid, "Hermes/Digest")
+            imap.star(uid)
+        except Exception as e:
+            logger.error("digest self-label failed uid={} err={}", uid, e)
+        db.execute(
+            "INSERT OR IGNORE INTO messages "
+            "(uid, message_id, received_at, sender, subject, classification, "
+            " classifier, confidence, label) VALUES (?, ?, ?, ?, ?, 'other', 'rule', 1.0, 'Hermes/Digest')",
+            (
+                uid, str(msg.get("Message-ID", f"hermes-{uid}")),
+                datetime.now(timezone.utc).isoformat(),
+                _decode_header(msg.get("From")), _decode_header(msg.get("Subject")),
+            ),
+        )
+        db.commit()
+        return
+
     classification = classify_message(msg, cfg, llm_classifier, db=db)
     label = _label_for(classification)
     message_id = str(msg.get("Message-ID", f"hermes-{uid}"))
