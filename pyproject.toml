@@ -24,6 +24,7 @@ hermes-bookmarks-weekly = "hermes.bookmarks.job:main"
 hermes-actions-decay = "hermes.actions.job:main"
 hermes-weekly-recap = "hermes.digest.weekly_job:main"
 hermes-rounds = "hermes.rounds.job:main"
+hermes-watchdog = "hermes.watchdog:main"
 
 [dependency-groups]
 dev = [
