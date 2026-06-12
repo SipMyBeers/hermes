@@ -14,6 +14,7 @@ from loguru import logger
 
 from hermes.config import Config
 from hermes.db import kv_get, kv_set
+from hermes.pipeline.store import touch_outbound
 from hermes.mail.imap_client import ImapClient
 
 SENT_FOLDER = "[Gmail]/Sent Mail"
@@ -55,6 +56,15 @@ def process_sent(db: sqlite3.Connection, cfg: Config, imap: ImapClient) -> int:
                 continue
             uid = int(fetched.uid)
             max_seen = max(max_seen, uid)
+            # Pipeline: every recipient gets a touch — store no-ops for
+            # untracked contacts, and a tracked lead auto-advances to replied.
+            try:
+                headers = [str(fetched.obj.get(h, "")) for h in ("To", "Cc", "Bcc")]
+                for _, addr in getaddresses([h for h in headers if h]):
+                    if addr:
+                        touch_outbound(db, addr)
+            except Exception as e:
+                logger.warning("pipeline touch_outbound failed uid={}: {}", uid, e)
             client = _client_for_recipients(fetched.obj, cfg)
             if client:
                 try:

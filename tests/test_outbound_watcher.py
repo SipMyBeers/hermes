@@ -86,3 +86,19 @@ def test_folder_restored_on_exception(tmp_path):
     except RuntimeError:
         pass
     imap.set_folder.assert_has_calls([call("[Gmail]/Sent Mail"), call("INBOX")])
+
+
+def test_outbound_touches_pipeline_and_advances_lead(tmp_path):
+    from hermes.db import kv_set
+    from hermes.pipeline.store import upsert_lead, board
+    db = _db(tmp_path)
+    kv_set(db, "sent_anchor", "500")
+    upsert_lead(db, "prospect@dentist-office.com", display_name="Prospect", source="partner")
+    imap = MagicMock()
+    imap.fetch_recent.return_value = iter([
+        _Fetched(501, "Prospect <prospect@dentist-office.com>"),
+    ])
+    process_sent(db, _cfg(), imap)
+    rows = board(db)
+    assert rows[0]["stage"] == "replied"
+    assert rows[0]["last_outbound"] is not None
