@@ -912,3 +912,48 @@ def test_approved_reply_does_not_touch_pipeline_stage(tmp_path):
     update = {"update_id": 10, "message": {"chat": {"id": 42}, "text": "/approve 1"}}
     handle_update(update, _cfg(), db, tg)
     assert board(db)[0]["stage"] == "lead"
+
+
+def test_cmd_pipeline_empty(tmp_path):
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    tg = MagicMock()
+    update = {"update_id": 11, "message": {"chat": {"id": 42}, "text": "/pipeline"}}
+    handle_update(update, _cfg(), db, tg)
+    text = tg.send_message.call_args.args[0]
+    assert "empty" in text.lower()
+
+
+def test_cmd_pipeline_board(tmp_path):
+    from hermes.pipeline.store import upsert_lead, set_stage
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    upsert_lead(db, "todd@tbn.net", display_name="Todd Rodeghiero", source="partner", project="tbn")
+    set_stage(db, "todd@tbn.net", "active")
+    upsert_lead(db, "p@dentist.com", display_name="New Prospect", source="partner")
+    tg = MagicMock()
+    update = {"update_id": 12, "message": {"chat": {"id": 42}, "text": "/pipeline"}}
+    handle_update(update, _cfg(), db, tg)
+    text = tg.send_message.call_args.args[0]
+    assert "Todd Rodeghiero" in text and "New Prospect" in text
+    assert "ACTIVE" in text.upper() and "LEAD" in text.upper()
+
+
+def test_cmd_stage_moves_contact(tmp_path):
+    from hermes.pipeline.store import upsert_lead, board
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    upsert_lead(db, "todd@tbn.net", display_name="Todd", source="partner")
+    tg = MagicMock()
+    update = {"update_id": 13, "message": {"chat": {"id": 42}, "text": "/stage todd quoted"}}
+    handle_update(update, _cfg(), db, tg)
+    assert board(db)[0]["stage"] == "quoted"
+    assert "quoted" in tg.send_message.call_args.args[0]
+
+
+def test_cmd_stage_reports_errors(tmp_path):
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    tg = MagicMock()
+    update = {"update_id": 14, "message": {"chat": {"id": 42}, "text": "/stage nobody quoted"}}
+    handle_update(update, _cfg(), db, tg)
+    assert "no pipeline contact" in tg.send_message.call_args.args[0]
+    update = {"update_id": 15, "message": {"chat": {"id": 42}, "text": "/stage"}}
+    handle_update(update, _cfg(), db, tg)
+    assert "Usage" in tg.send_message.call_args.args[0]

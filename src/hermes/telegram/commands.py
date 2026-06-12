@@ -27,6 +27,8 @@ If you'd rather type:
 • `/save <url>` — for the weekly bookmark digest.
 • `/feeds` — list/add/remove RSS feeds; new items show up periodically.
 • `/draft <uid>` — draft a reply for a saved email.
+• `/pipeline` — prospect/client board by stage.
+• `/stage <who> <stage>` — move someone (lead/replied/quoted/active/invoiced/closed).
 
 Slash-command index for power users:
 `/status` `/approve` `/reject` `/done` `/snooze` `/dismiss` `/retry`
@@ -108,6 +110,8 @@ def handle_update(
         "/dismiss": _cmd_dismiss,
         "/snooze": _cmd_snooze,
         "/draft": _cmd_draft,
+        "/pipeline": _cmd_pipeline,
+        "/stage": _cmd_stage,
         "/feeds": _cmd_feeds,
         "/start": _cmd_start,
         "/help": lambda *a: tg.send_message(HELP_TEXT),
@@ -467,6 +471,45 @@ def _cmd_draft(args, cfg, db, tg):
         f"{draft_text[:1500]}",
         reply_markup=approval_card(oid),
     )
+
+
+def _cmd_pipeline(args, cfg, db, tg):
+    from hermes.pipeline.store import board
+    rows = board(db)
+    if not rows:
+        tg.send_message("Pipeline is empty — leads land here automatically.")
+        return
+    lines = ["📊 *Pipeline*\n"]
+    current_stage = None
+    for r in rows:
+        if r["stage"] != current_stage:
+            current_stage = r["stage"]
+            lines.append(f"*{current_stage.upper()}*")
+        who = r["display_name"] or r["contact_email"]
+        proj = f" — {r['project']}" if r["project"] else ""
+        ts = r["last_inbound"] or r["last_outbound"] or r["updated"]
+        day = (ts or "")[:10]
+        lines.append(f"  • {who}{proj} · {day}")
+    lines.append("\n`/stage <who> <stage>` to move someone")
+    tg.send_message("\n".join(lines))
+
+
+def _cmd_stage(args, cfg, db, tg):
+    from hermes.pipeline.store import STAGES, set_stage
+    if len(args) < 2:
+        tg.send_message(
+            "Usage: /stage <email-or-name> <stage>\n"
+            f"Stages: {', '.join(STAGES)}"
+        )
+        return
+    stage = args[-1].lower()
+    who = " ".join(args[:-1])
+    try:
+        email = set_stage(db, who, stage)
+    except ValueError as e:
+        tg.send_message(str(e))
+        return
+    tg.send_message(f"✅ {email} → *{stage}*")
 
 
 def _cmd_feeds(args, cfg, db, tg):
