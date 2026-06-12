@@ -2,7 +2,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 # Note: databases migrated from a v0/initial install may still have the old
 # `idx_messages_received` single-column index hanging around alongside the
@@ -209,6 +209,24 @@ CREATE TABLE IF NOT EXISTS kv (
 );
 """
 
+# Phase 2: client-acquisition pipeline. One row per prospect/client contact;
+# the email triage daemon and Sent watcher keep the timestamps fresh.
+_SCHEMA_V11 = """
+CREATE TABLE IF NOT EXISTS pipeline (
+    contact_email TEXT PRIMARY KEY,
+    display_name  TEXT,
+    project       TEXT,
+    stage         TEXT NOT NULL DEFAULT 'lead'
+        CHECK (stage IN ('lead','replied','quoted','active','invoiced','closed')),
+    source        TEXT,          -- 'direct' | 'partner' | 'form'
+    last_inbound  TEXT,
+    last_outbound TEXT,
+    created       TEXT NOT NULL,
+    updated       TEXT NOT NULL,
+    notes         TEXT
+);
+"""
+
 
 def _migrate_v7(conn: sqlite3.Connection) -> None:
     """Phase M.2: widen actions.source_kind CHECK to include 'feed_item'.
@@ -347,6 +365,9 @@ def migrate(conn: sqlite3.Connection) -> None:
     if current < 10:
         # v9 -> v10: kv table (Phase 1 sent-folder anchor). Additive.
         conn.executescript(_SCHEMA_V10)
+    if current < 11:
+        # v10 -> v11: pipeline table (Phase 2). Additive.
+        conn.executescript(_SCHEMA_V11)
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 
