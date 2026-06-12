@@ -57,9 +57,15 @@ class ImapClient:
         logger.debug("imap label uid={} label={}", uid, label)
 
     def archive(self, uid: int) -> None:
+        """Archive = UID MOVE out of INBOX into All Mail (labels persist).
+
+        NB: '-X-GM-LABELS \\Inbox' is silently ignored by Gmail while the
+        INBOX folder is selected — messages stayed in the inbox. MOVE is
+        honored and Gmail keeps every user label on the message.
+        """
         assert self._box, "call connect() first"
-        # Remove \\Inbox label = archive
-        self._box.client.uid("STORE", str(uid), "-X-GM-LABELS", '"\\\\Inbox"')
+        self._box.client.uid("MOVE", str(uid), '"[Gmail]/All Mail"')
+        logger.debug("imap archive uid={}", uid)
 
     def move_to_trash(self, uid: int) -> None:
         """Move a message to Gmail Trash via the X-GM-LABELS extension.

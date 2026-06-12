@@ -89,3 +89,14 @@ def test_idle_no_new_mail_returns_false():
     ic = ImapClient(_gmail())
     ic._box = _FakeBox([b"* OK still here"])
     assert ic.idle(timeout=1) is False
+
+
+def test_archive_moves_to_all_mail():
+    """Gmail ignores '-X-GM-LABELS \\Inbox' while INBOX is the selected
+    folder (the v1 bug — promos got labeled but never left the inbox).
+    Archive must UID MOVE to All Mail instead."""
+    fake_box = MagicMock()
+    ic = ImapClient(_gmail())
+    ic._box = fake_box
+    ic.archive(uid=77)
+    fake_box.client.uid.assert_called_once_with("MOVE", "77", '"[Gmail]/All Mail"')
