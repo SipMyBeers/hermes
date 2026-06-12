@@ -125,14 +125,17 @@ def test_process_message_archives_promo_when_delete_promos_false(tmp_path):
     fake_imap.move_to_trash.assert_not_called()
 
 
-def test_process_message_does_not_archive_client(tmp_path):
+def test_process_message_archives_client(tmp_path):
+    """Phase 1 (v2 spec): client threads skip the inbox — label + archive.
+    The morning digest and urgent enrichment ping keep them visible."""
     from hermes.db import connect, migrate
     db = connect(tmp_path / "t.sqlite")
     migrate(db)
     msg = message_from_bytes((FIXTURES / "client_boarhog.eml").read_bytes())
     fake_imap = MagicMock()
     process_message(uid=12, msg=msg, db=db, cfg=_cfg(), imap=fake_imap, llm_classifier=None, drafter=None)
-    fake_imap.archive.assert_not_called()
+    fake_imap.apply_label.assert_called_once_with(12, "Hermes/Client/boarhog")
+    fake_imap.archive.assert_called_once_with(12)
 
 
 def test_received_at_normalizes_rfc2822_to_iso(tmp_path):
@@ -635,3 +638,70 @@ def test_known_client_does_not_get_lead_label(tmp_path, monkeypatch):
     label_calls = [c.args[1] for c in fake_imap.apply_label.call_args_list]
     assert "Hermes/Lead" not in label_calls
     fake_tg.send_message.assert_not_called()
+
+
+def _p1_cfg() -> Config:
+    """Config with Phase 1 routing-only clients + Josh as partner."""
+    return replace(
+        _cfg(),
+        clients={
+            "tbn": ClientConfig(
+                name="tbn", domain="tbn.net", contact_email="todd@tbn.net", active=True,
+            ),
+            "maxcrofton": ClientConfig(
+                name="maxcrofton", contact_email="maxcrofton@gmail.com", active=True,
+            ),
+        },
+        partners={"josh": ("magic@rainbowlasers.com", "joshualogan@gmail.com")},
+    )
+
+
+def _partner_msg(to: str, subject: str, body: str = "see below") -> "Message":
+    from email.message import EmailMessage
+    m = EmailMessage()
+    m["From"] = "Rainbow Lasers <magic@rainbowlasers.com>"
+    m["To"] = to
+    m["Cc"] = "dzbeers747@gmail.com"
+    m["Subject"] = subject
+    m["Message-ID"] = "<p1-test@rainbowlasers.com>"
+    m.set_content(body)
+    return m
+
+
+def test_partner_thread_resolves_to_client_and_archives(tmp_path):
+    from hermes.db import connect, migrate
+    db = connect(tmp_path / "t.sqlite")
+    migrate(db)
+    msg = _partner_msg(to="todd@tbn.net", subject="Re: Quote #1052221 / TBN")
+    fake_imap = MagicMock()
+    process_message(uid=20, msg=msg, db=db, cfg=_p1_cfg(), imap=fake_imap, llm_classifier=None, drafter=None)
+    fake_imap.apply_label.assert_called_once_with(20, "Hermes/Client/tbn")
+    fake_imap.archive.assert_called_once_with(20)
+
+
+def test_partner_thread_no_client_match_goes_review_stays_inbox(tmp_path):
+    from hermes.db import connect, migrate
+    db = connect(tmp_path / "t.sqlite")
+    migrate(db)
+    msg = _partner_msg(to="dzbeers747@gmail.com", subject="family bbq sunday")
+    fake_imap = MagicMock()
+    process_message(uid=21, msg=msg, db=db, cfg=_p1_cfg(), imap=fake_imap, llm_classifier=None, drafter=None)
+    fake_imap.apply_label.assert_called_once_with(21, "Hermes/Review")
+    fake_imap.archive.assert_not_called()
+
+
+def test_client_contact_email_sender_routes_and_archives(tmp_path):
+    from email.message import EmailMessage
+    from hermes.db import connect, migrate
+    db = connect(tmp_path / "t.sqlite")
+    migrate(db)
+    m = EmailMessage()
+    m["From"] = "Max Crofton <maxcrofton@gmail.com>"
+    m["To"] = "dzbeers747@gmail.com"
+    m["Subject"] = "Re: website feedback"
+    m["Message-ID"] = "<max-test@gmail.com>"
+    m.set_content("Looks great")
+    fake_imap = MagicMock()
+    process_message(uid=22, msg=m, db=db, cfg=_p1_cfg(), imap=fake_imap, llm_classifier=None, drafter=None)
+    fake_imap.apply_label.assert_called_once_with(22, "Hermes/Client/maxcrofton")
+    fake_imap.archive.assert_called_once_with(22)

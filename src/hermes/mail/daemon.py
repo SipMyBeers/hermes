@@ -16,6 +16,7 @@ from hermes.classifier.rules import classify as rule_classify, ClientHint
 from hermes.classifier.llm import classify_llm, LLMResult
 from hermes.classifier.drafter import draft_reply
 from hermes.classifier.learned import is_learned_promo
+from hermes.classifier.partner import infer_client
 from hermes.db import beat, connect, migrate
 from hermes.digest.enrich import summarize_for_brief
 from hermes.extract.lead import detect_lead, LeadSignal
@@ -43,6 +44,17 @@ def _client_domains(cfg: Config) -> dict[str, ClientHint]:
     }
 
 
+def _client_contacts(cfg: Config) -> dict[str, ClientHint]:
+    return {
+        c.contact_email.lower(): ClientHint(client=c.name)
+        for c in cfg.clients.values() if c.contact_email
+    }
+
+
+def _partner_addrs(cfg: Config) -> set[str]:
+    return {a for addrs in cfg.partners.values() for a in addrs}
+
+
 def classify_message(
     msg: Message,
     cfg: Config,
@@ -55,7 +67,28 @@ def classify_message(
     rule = rule_classify(
         msg, _client_domains(cfg), personal_allowlist=set(),
         learned_promo_lookup=learned,
+        client_contacts=_client_contacts(cfg),
+        partner_addrs=_partner_addrs(cfg),
     )
+    if rule.label == "partner":
+        # Phase 1: a partner (Josh) thread belongs to whichever client its
+        # participants/forward/subject point at. No match -> review, so it
+        # stays in the inbox and downstream lead detection still sees it.
+        client_key = infer_client(msg, cfg.clients)
+        if client_key:
+            return Classification(
+                label="client",
+                confidence=1.0,
+                classifier="rule",
+                reason=f"partner thread resolved to client {client_key}",
+                client=client_key,
+            )
+        return Classification(
+            label="review",
+            confidence=0.0,
+            classifier="rule",
+            reason="partner thread, no client match",
+        )
     if rule.label != "unknown":
         return Classification(
             label=rule.label,
@@ -176,6 +209,10 @@ def process_message(
                 imap.move_to_trash(uid)
             else:
                 imap.archive(uid)
+        elif classification.label == "client":
+            # Phase 1: client threads skip the inbox. They stay reachable
+            # under Hermes/Client/<name>; urgent enrichment still pings.
+            imap.archive(uid)
     except Exception as e:
         logger.error("imap label failed uid={} err={}", uid, e)
 
@@ -266,7 +303,9 @@ def process_message(
     # Lead detection runs alongside classification, not in place of it.
     # A message can be both classified as 'review' AND a lead — both labels apply.
     # Skipped for promos since they're being trashed/archived anyway.
-    if classification.label != "promo":
+    # Skipped for client threads too (Phase 1): a resolved project thread is
+    # ongoing work, not a prospect — "quote"/"proposal" words are routine there.
+    if classification.label not in ("promo", "client"):
         known_domains = {c.domain.lower() for c in cfg.clients.values() if c.domain}
         lead = detect_lead(msg, known_client_domains=known_domains)
         if lead.is_lead:
