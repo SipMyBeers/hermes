@@ -877,3 +877,38 @@ def test_feeds_unknown_subcommand_shows_usage(tmp_path):
     handle_update(update, _cfg(), db, tg)
     text = tg.send_message.call_args.args[0]
     assert "Usage:" in text
+
+
+def test_approved_invoice_sets_pipeline_invoiced(tmp_path):
+    """Phase 2: a sent invoice advances (or creates) the contact's pipeline
+    row at stage 'invoiced'."""
+    from hermes.pipeline.store import board
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    db.execute(
+        "INSERT INTO outbox (kind, to_addr, subject, body, status, created_at) "
+        "VALUES ('invoice', 'todd@tbn.net', 'Invoice TBN-001', 'b', 'queued', '2026-06-12')"
+    )
+    tg = MagicMock()
+    import hermes.telegram.commands as cmd
+    cmd._do_send = MagicMock(return_value=True)
+    update = {"update_id": 9, "message": {"chat": {"id": 42}, "text": "/approve 1"}}
+    handle_update(update, _cfg(), db, tg)
+    rows = board(db)
+    assert rows and rows[0]["contact_email"] == "todd@tbn.net"
+    assert rows[0]["stage"] == "invoiced"
+
+
+def test_approved_reply_does_not_touch_pipeline_stage(tmp_path):
+    from hermes.pipeline.store import upsert_lead, board
+    db = connect(tmp_path / "t.sqlite"); migrate(db)
+    upsert_lead(db, "a@b.com", display_name="A", source="direct")
+    db.execute(
+        "INSERT INTO outbox (kind, to_addr, subject, body, status, created_at) "
+        "VALUES ('reply', 'a@b.com', 's', 'b', 'queued', '2026-06-12')"
+    )
+    tg = MagicMock()
+    import hermes.telegram.commands as cmd
+    cmd._do_send = MagicMock(return_value=True)
+    update = {"update_id": 10, "message": {"chat": {"id": 42}, "text": "/approve 1"}}
+    handle_update(update, _cfg(), db, tg)
+    assert board(db)[0]["stage"] == "lead"

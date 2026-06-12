@@ -168,12 +168,12 @@ def _cmd_approve(args, cfg, db, tg, *, silent: bool = False):
         tg.send_message("Outbox id must be an integer")
         return
     row = db.execute(
-        "SELECT to_addr, subject, body, status, attachments FROM outbox WHERE id=?", (oid,)
+        "SELECT to_addr, subject, body, status, attachments, kind FROM outbox WHERE id=?", (oid,)
     ).fetchone()
     if not row:
         tg.send_message(f"No outbox entry with id={oid}")
         return
-    to_addr, subject, body, status, attachments_raw = row
+    to_addr, subject, body, status, attachments_raw, kind = row
     if status != "queued":
         tg.send_message(f"Outbox {oid} status={status}, cannot send")
         return
@@ -183,6 +183,14 @@ def _cmd_approve(args, cfg, db, tg, *, silent: bool = False):
             "UPDATE outbox SET status='sent', sent_at=? WHERE id=?",
             (datetime.now(timezone.utc).isoformat(), oid),
         )
+        if kind == "invoice":
+            # Phase 2: a sent invoice advances the contact to 'invoiced'.
+            try:
+                from hermes.pipeline.store import set_stage, upsert_lead
+                upsert_lead(db, to_addr, display_name="", source="direct")
+                set_stage(db, to_addr, "invoiced")
+            except Exception as e:
+                logger.warning("pipeline invoiced update failed for {}: {}", to_addr, e)
         if not silent:
             tg.send_message(f"Sent #{oid} to {to_addr}")
     else:
