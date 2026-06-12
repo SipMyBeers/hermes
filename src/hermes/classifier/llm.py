@@ -48,6 +48,7 @@ def classify_llm(
     model: str = "qwen3:4b",
     host: str = "http://localhost:11434",
     timeout: float = 30.0,
+    retries: int = 1,
 ) -> LLMResult:
     prompt = _PROMPT.format(
         sender=str(msg.get("From", "")),
@@ -55,23 +56,32 @@ def classify_llm(
         body=_body_text(msg)[:1500],
     )
     payload = {"model": model, "prompt": prompt, "stream": False, "format": "json"}
-    try:
-        resp = httpx.post(f"{host}/api/generate", json=payload, timeout=timeout)
-        resp.raise_for_status()
-    except httpx.HTTPError as e:
-        logger.warning("ollama unreachable: {}", e)
-        return LLMResult(label="unknown", confidence=0.0, why=f"ollama error: {e}")
+    last_err = ""
+    for attempt in range(retries + 1):
+        try:
+            resp = httpx.post(f"{host}/api/generate", json=payload, timeout=timeout)
+            resp.raise_for_status()
+        except httpx.HTTPError as e:
+            logger.warning("ollama unreachable: {}", e)
+            return LLMResult(label="unknown", confidence=0.0, why=f"ollama error: {e}")
 
-    raw = resp.json().get("response", "")
-    try:
-        data = json.loads(raw)
-        label = str(data.get("label", "")).lower()
-        if label not in ALLOWED_LABELS:
-            label = "other"
-        confidence = float(data.get("confidence", 0.0))
-        confidence = max(0.0, min(1.0, confidence))
-        why = str(data.get("why", ""))
-        return LLMResult(label=label, confidence=confidence, why=why)
-    except (json.JSONDecodeError, ValueError, TypeError) as e:
-        logger.warning("llm response unparseable: {!r} -> {}", raw[:200], e)
-        return LLMResult(label="unknown", confidence=0.0, why="unparseable response")
+        raw = resp.json().get("response", "")
+        try:
+            data = json.loads(raw)
+            label = str(data.get("label", "")).lower()
+            if label not in ALLOWED_LABELS:
+                label = "other"
+            confidence = float(data.get("confidence", 0.0))
+            confidence = max(0.0, min(1.0, confidence))
+            why = str(data.get("why", ""))
+            return LLMResult(label=label, confidence=confidence, why=why)
+        except (json.JSONDecodeError, ValueError, TypeError) as e:
+            last_err = str(e)
+            if attempt < retries:
+                logger.debug(
+                    "llm response unparseable (attempt {}): {!r}; retrying",
+                    attempt + 1, raw[:120],
+                )
+                continue
+            logger.warning("llm response unparseable after retries: {!r} -> {}", raw[:200], e)
+    return LLMResult(label="unknown", confidence=0.0, why=f"unparseable response: {last_err}")

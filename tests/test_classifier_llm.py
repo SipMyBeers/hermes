@@ -42,3 +42,55 @@ def test_classify_llm_clamps_label():
     with patch("hermes.classifier.llm.httpx.post", return_value=fake_resp):
         r = classify_llm(_msg("ambiguous.eml"), model="qwen3:4b", host="http://x")
     assert r.label == "other"  # unknown -> other
+
+
+def test_classify_llm_retries_on_empty_response(monkeypatch):
+    """First Ollama call returns empty response; second returns valid JSON.
+    classify_llm must retry once instead of giving up."""
+    import hermes.classifier.llm as llm_mod
+    calls = {"n": 0}
+
+    class FakeResp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return {"response": ""}
+            return {"response": '{"label": "promo", "confidence": 0.9, "why": "newsletter"}'}
+
+    monkeypatch.setattr(llm_mod.httpx, "post", lambda *a, **k: FakeResp())
+
+    from email.message import EmailMessage
+    msg = EmailMessage()
+    msg["From"] = "deals@shop.com"
+    msg["Subject"] = "50% off"
+    msg.set_content("Big sale")
+
+    result = llm_mod.classify_llm(msg)
+    assert result.label == "promo"
+    assert calls["n"] == 2
+
+
+def test_classify_llm_unknown_after_exhausted_retries(monkeypatch):
+    import hermes.classifier.llm as llm_mod
+
+    class FakeResp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"response": "not json at all"}
+
+    monkeypatch.setattr(llm_mod.httpx, "post", lambda *a, **k: FakeResp())
+
+    from email.message import EmailMessage
+    msg = EmailMessage()
+    msg["From"] = "x@y.z"
+    msg["Subject"] = "hm"
+    msg.set_content("hm")
+
+    result = llm_mod.classify_llm(msg)
+    assert result.label == "unknown"
+    assert result.confidence == 0.0
