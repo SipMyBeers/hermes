@@ -59,3 +59,12 @@ active = true
 [maxcrofton]
 contact_email = "maxcrofton@gmail.com"
 active = true
+
+[leads]
+form_address = "leads@ranger-beers.com"
+# Domains that must never create leads — Kumquat funnel + insurance vendors
+# have their own systems and would flood the pipeline.
+ignore_domains = [
+    "kumquat.life", "zeepo.com", "gohighlevel.com",
+    "uppatop.com", "surancebay.com", "xcelsolutions.com",
+]

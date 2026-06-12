@@ -375,3 +375,28 @@ def test_partners_default_empty(tmp_path: Path):
     clients.write_text("# empty")
     cfg = load_config(secrets_path=secrets, clients_path=clients)
     assert dict(cfg.partners) == {}
+
+
+def test_leads_section_parses_and_is_not_a_client(tmp_path: Path):
+    secrets = tmp_path / "secrets.toml"
+    secrets.write_text(_MIN_SECRETS)
+    clients = tmp_path / "clients.toml"
+    clients.write_text("""
+[leads]
+form_address = "Leads@Ranger-Beers.com"
+ignore_domains = ["Kumquat.life", "zeepo.com"]
+""")
+    cfg = load_config(secrets_path=secrets, clients_path=clients)
+    assert "leads" not in cfg.clients
+    assert cfg.leads.form_address == "leads@ranger-beers.com"
+    assert cfg.leads.ignore_domains == ("kumquat.life", "zeepo.com")
+
+
+def test_leads_defaults_empty(tmp_path: Path):
+    secrets = tmp_path / "secrets.toml"
+    secrets.write_text(_MIN_SECRETS)
+    clients = tmp_path / "clients.toml"
+    clients.write_text("# empty")
+    cfg = load_config(secrets_path=secrets, clients_path=clients)
+    assert cfg.leads.form_address == ""
+    assert cfg.leads.ignore_domains == ()

@@ -88,6 +88,13 @@ class IngestConfig:
 
 
 @dataclass(frozen=True)
+class LeadsConfig:
+    """Lead-engine knobs from clients.toml [leads]."""
+    form_address: str = ""                  # contact-form submissions land here
+    ignore_domains: tuple[str, ...] = ()    # never leads (e.g. kumquat funnel)
+
+
+@dataclass(frozen=True)
 class Config:
     gmail: GmailConfig
     telegram: TelegramConfig
@@ -101,6 +108,7 @@ class Config:
     partners: Mapping[str, tuple[str, ...]] = field(
         default_factory=lambda: MappingProxyType({})
     )
+    leads: LeadsConfig = field(default_factory=LeadsConfig)
 
 
 def _require_bool(value, *, key: str, source: str) -> bool:
@@ -216,9 +224,21 @@ def load_config(
     except (TypeError, AttributeError) as e:
         raise ConfigError(f"{clients_path}: malformed [partners] section - {e}") from e
 
+    # [leads] is a reserved table, not a client.
+    try:
+        leads_section = c.get("leads", {})
+        leads_cfg = LeadsConfig(
+            form_address=str(leads_section.get("form_address", "")).lower(),
+            ignore_domains=tuple(
+                str(d).lower() for d in leads_section.get("ignore_domains", [])
+            ),
+        )
+    except (TypeError, AttributeError) as e:
+        raise ConfigError(f"{clients_path}: malformed [leads] section - {e}") from e
+
     clients: dict[str, ClientConfig] = {}
     for key, body in c.items():
-        if key == "partners":
+        if key in ("partners", "leads"):
             continue
         try:
             payment_methods_raw = body.get("payment_methods", [])
@@ -273,4 +293,5 @@ def load_config(
         ingest=ingest_cfg,
         user=user_cfg,
         partners=MappingProxyType(partners),
+        leads=leads_cfg,
     )
