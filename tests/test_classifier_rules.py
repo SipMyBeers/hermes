@@ -162,3 +162,59 @@ def test_classify_client_beats_learned_promo():
     )
     assert r.label == "client"
     assert r.client == "acme"
+
+
+def _p1_msg(from_addr: str, subject: str = "hi", name: str = "") -> "Message":
+    from email.message import EmailMessage
+    m = EmailMessage()
+    m["From"] = f"{name} <{from_addr}>" if name else from_addr
+    m["Subject"] = subject
+    m.set_content("body")
+    return m
+
+
+def test_client_contact_email_match():
+    """Phase 1: gmail.com clients (Max) match by exact contact address."""
+    from hermes.classifier.rules import classify, ClientHint
+    res = classify(
+        _p1_msg("MaxCrofton@gmail.com", name="Max Crofton"),
+        client_domains={},
+        personal_allowlist=set(),
+        client_contacts={"maxcrofton@gmail.com": ClientHint(client="maxcrofton")},
+    )
+    assert res.label == "client"
+    assert res.client == "maxcrofton"
+
+
+def test_contact_match_does_not_swallow_other_gmail_senders():
+    from hermes.classifier.rules import classify, ClientHint
+    res = classify(
+        _p1_msg("randomguy@gmail.com"),
+        client_domains={},
+        personal_allowlist=set(),
+        client_contacts={"maxcrofton@gmail.com": ClientHint(client="maxcrofton")},
+    )
+    assert res.label == "unknown"
+
+
+def test_partner_sender_labeled_partner():
+    from hermes.classifier.rules import classify
+    res = classify(
+        _p1_msg("magic@rainbowlasers.com", subject="Fwd: some client thing"),
+        client_domains={},
+        personal_allowlist=set(),
+        partner_addrs={"magic@rainbowlasers.com", "joshualogan@gmail.com"},
+    )
+    assert res.label == "partner"
+    assert res.confidence == 1.0
+
+
+def test_list_unsubscribe_still_beats_partner():
+    from hermes.classifier.rules import classify
+    m = _p1_msg("magic@rainbowlasers.com")
+    m["List-Unsubscribe"] = "<mailto:u@x.com>"
+    res = classify(
+        m, client_domains={}, personal_allowlist=set(),
+        partner_addrs={"magic@rainbowlasers.com"},
+    )
+    assert res.label == "promo"

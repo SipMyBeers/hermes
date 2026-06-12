@@ -86,6 +86,8 @@ def classify(
     client_domains: dict[str, ClientHint],
     personal_allowlist: set[str],
     learned_promo_lookup: Callable[[str], bool] | None = None,
+    client_contacts: dict[str, ClientHint] | None = None,
+    partner_addrs: set[str] | None = None,
 ) -> RuleResult:
     """Tier-1 classification.
 
@@ -108,6 +110,26 @@ def classify(
 
     if sender_addr in {a.lower() for a in personal_allowlist}:
         return RuleResult(label="personal", confidence=1.0, reason="sender in personal_allowlist")
+
+    # Phase 1: exact contact-address match — catches clients on shared
+    # domains (gmail.com) where domain matching would be a disaster.
+    if client_contacts and sender_addr in client_contacts:
+        hint = client_contacts[sender_addr]
+        return RuleResult(
+            label="client",
+            confidence=1.0,
+            reason=f"sender address is client contact for {hint.client}",
+            client=hint.client,
+        )
+
+    # Phase 1: partner senders (relationship-holders who CC/forward client
+    # mail). The daemon resolves which client the thread belongs to.
+    if partner_addrs and sender_addr in {a.lower() for a in partner_addrs}:
+        return RuleResult(
+            label="partner",
+            confidence=1.0,
+            reason=f"sender {sender_addr} is a partner",
+        )
 
     if sender_domain in client_domains:
         hint = client_domains[sender_domain]
