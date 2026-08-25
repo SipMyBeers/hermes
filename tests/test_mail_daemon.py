@@ -826,3 +826,82 @@ def test_inbound_from_pipeline_contact_touches_last_inbound(tmp_path, monkeypatc
                     imap=MagicMock(), llm_classifier=None, drafter=None)
     row = db.execute("SELECT last_inbound FROM pipeline WHERE contact_email='casey@unknown.io'").fetchone()
     assert row[0] is not None
+
+
+# --- always_inbox: recipient-protected mail never leaves the inbox -------------
+# Cloudflare Email Routing forwards dylan@beers.cash -> the Gmail account. The
+# classifier only ever looked at From, so forwarded mail to a business address
+# was classified on the sender and archived/trashed out of sight.
+
+def _promo_addressed_to(recipient: str, header: str = "To"):
+    msg = message_from_bytes((FIXTURES / "promo_amazon.eml").read_bytes())
+    del msg[header]
+    msg[header] = recipient
+    return msg
+
+
+def test_process_message_keeps_protected_recipient_in_inbox(tmp_path):
+    """Mail addressed to an always_inbox address is labelled but never archived."""
+    from hermes.db import connect, migrate
+    db = connect(tmp_path / "t.sqlite")
+    migrate(db)
+    msg = _promo_addressed_to("dylan@beers.cash")
+    fake_imap = MagicMock()
+    cfg = replace(_cfg(), mail=MailConfig(delete_promos=False, always_inbox=("dylan@beers.cash",)))
+    process_message(uid=30, msg=msg, db=db, cfg=cfg, imap=fake_imap, llm_classifier=None, drafter=None)
+    fake_imap.apply_label.assert_called_once_with(30, "Hermes/Promo")
+    fake_imap.archive.assert_not_called()
+    fake_imap.move_to_trash.assert_not_called()
+
+
+def test_process_message_protected_recipient_survives_delete_promos(tmp_path):
+    """always_inbox outranks delete_promos=True — protected mail is never trashed."""
+    from hermes.db import connect, migrate
+    db = connect(tmp_path / "t.sqlite")
+    migrate(db)
+    msg = _promo_addressed_to("dylan@beers.cash")
+    fake_imap = MagicMock()
+    cfg = replace(_cfg(), mail=MailConfig(delete_promos=True, always_inbox=("dylan@beers.cash",)))
+    process_message(uid=31, msg=msg, db=db, cfg=cfg, imap=fake_imap, llm_classifier=None, drafter=None)
+    fake_imap.move_to_trash.assert_not_called()
+    fake_imap.archive.assert_not_called()
+
+
+@pytest.mark.parametrize("header", ["To", "Cc", "Delivered-To", "X-Forwarded-To", "X-Original-To"])
+def test_process_message_protects_across_recipient_headers(tmp_path, header):
+    """Forwarders vary in which header carries the original recipient."""
+    from hermes.db import connect, migrate
+    db = connect(tmp_path / "t.sqlite")
+    migrate(db)
+    msg = _promo_addressed_to("Dylan Beers <DYLAN@Beers.Cash>", header=header)
+    fake_imap = MagicMock()
+    cfg = replace(_cfg(), mail=MailConfig(delete_promos=True, always_inbox=("dylan@beers.cash",)))
+    process_message(uid=32, msg=msg, db=db, cfg=cfg, imap=fake_imap, llm_classifier=None, drafter=None)
+    fake_imap.move_to_trash.assert_not_called()
+    fake_imap.archive.assert_not_called()
+
+
+def test_process_message_unprotected_recipient_still_archives(tmp_path):
+    """Regression: an empty always_inbox leaves promo handling untouched."""
+    from hermes.db import connect, migrate
+    db = connect(tmp_path / "t.sqlite")
+    migrate(db)
+    msg = _promo_addressed_to("someone@example.com")
+    fake_imap = MagicMock()
+    cfg = replace(_cfg(), mail=MailConfig(delete_promos=False, always_inbox=("dylan@beers.cash",)))
+    process_message(uid=33, msg=msg, db=db, cfg=cfg, imap=fake_imap, llm_classifier=None, drafter=None)
+    fake_imap.archive.assert_called_once_with(33)
+
+
+def test_process_message_protected_client_mail_stays_in_inbox(tmp_path):
+    """The client branch archives too; always_inbox must override that as well."""
+    from hermes.db import connect, migrate
+    db = connect(tmp_path / "t.sqlite")
+    migrate(db)
+    msg = message_from_bytes((FIXTURES / "client_boarhog.eml").read_bytes())
+    del msg["To"]
+    msg["To"] = "dylan@beers.cash"
+    fake_imap = MagicMock()
+    cfg = replace(_cfg(), mail=MailConfig(delete_promos=False, always_inbox=("dylan@beers.cash",)))
+    process_message(uid=34, msg=msg, db=db, cfg=cfg, imap=fake_imap, llm_classifier=None, drafter=None)
+    fake_imap.archive.assert_not_called()

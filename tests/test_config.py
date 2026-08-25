@@ -400,3 +400,76 @@ def test_leads_defaults_empty(tmp_path: Path):
     cfg = load_config(secrets_path=secrets, clients_path=clients)
     assert cfg.leads.form_address == ""
     assert cfg.leads.ignore_domains == ()
+
+
+def test_load_config_mail_always_inbox_default_empty(tmp_path: Path):
+    """Omitting always_inbox leaves the inbox guard off — no behaviour change."""
+    secrets = tmp_path / "secrets.toml"
+    secrets.write_text("""
+[gmail]
+imap_user = "u@g.com"
+imap_app_password = "x"
+smtp_user = "u@g.com"
+smtp_app_password = "x"
+from_address = "U <u@g.com>"
+reply_to = "U <u@g.com>"
+
+[telegram]
+bot_token = "1:A"
+chat_id = 0
+""")
+    clients = tmp_path / "clients.toml"
+    clients.write_text("# empty")
+    cfg = load_config(secrets_path=secrets, clients_path=clients)
+    assert cfg.mail.always_inbox == ()
+
+
+def test_load_config_mail_always_inbox_normalises(tmp_path: Path):
+    """Addresses are lowercased and stored as a tuple so the config stays frozen."""
+    secrets = tmp_path / "secrets.toml"
+    secrets.write_text("""
+[gmail]
+imap_user = "u@g.com"
+imap_app_password = "x"
+smtp_user = "u@g.com"
+smtp_app_password = "x"
+from_address = "U <u@g.com>"
+reply_to = "U <u@g.com>"
+
+[telegram]
+bot_token = "1:A"
+chat_id = 0
+
+[mail]
+always_inbox = ["Dylan@Beers.Cash", "leads@ranger-beers.com"]
+""")
+    clients = tmp_path / "clients.toml"
+    clients.write_text("# empty")
+    cfg = load_config(secrets_path=secrets, clients_path=clients)
+    assert cfg.mail.always_inbox == ("dylan@beers.cash", "leads@ranger-beers.com")
+
+
+def test_load_config_mail_always_inbox_rejects_non_list(tmp_path: Path):
+    """A bare string is a config mistake worth failing loudly on, not iterating per-character."""
+    secrets = tmp_path / "secrets.toml"
+    secrets.write_text("""
+[gmail]
+imap_user = "u@g.com"
+imap_app_password = "x"
+smtp_user = "u@g.com"
+smtp_app_password = "x"
+from_address = "U <u@g.com>"
+reply_to = "U <u@g.com>"
+
+[telegram]
+bot_token = "1:A"
+chat_id = 0
+
+[mail]
+always_inbox = "dylan@beers.cash"
+""")
+    clients = tmp_path / "clients.toml"
+    clients.write_text("# empty")
+    from hermes.config import ConfigError
+    with pytest.raises(ConfigError):
+        load_config(secrets_path=secrets, clients_path=clients)

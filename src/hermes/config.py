@@ -58,6 +58,12 @@ class ClientConfig:
 @dataclass(frozen=True)
 class MailConfig:
     delete_promos: bool = True   # default: send classified promos to Trash (auto-purge in 30d)
+    # Recipient addresses that must never leave the inbox, whatever the
+    # classifier decides. Every rule keys off From, so mail forwarded in to a
+    # business address (Cloudflare Email Routing -> Gmail) gets judged on its
+    # sender and archived out of sight. Matched against To/Cc and the
+    # forwarding headers; classification and labelling are unaffected.
+    always_inbox: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -189,7 +195,14 @@ def load_config(
             )
         else:
             delete_promos = True
-        mail_cfg = MailConfig(delete_promos=delete_promos)
+        raw_always = mail_section.get("always_inbox", [])
+        if isinstance(raw_always, str) or not isinstance(raw_always, (list, tuple)):
+            raise ConfigError(
+                f"{secrets_path}:[mail] always_inbox must be a list of addresses, "
+                f"got {type(raw_always).__name__}"
+            )
+        always_inbox = tuple(str(a).strip().lower() for a in raw_always if str(a).strip())
+        mail_cfg = MailConfig(delete_promos=delete_promos, always_inbox=always_inbox)
     except ConfigError:
         raise
     except (TypeError, AttributeError) as e:

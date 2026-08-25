@@ -119,6 +119,28 @@ def classify_message(
     )
 
 
+_RECIPIENT_HEADERS = ("To", "Cc", "Delivered-To", "X-Forwarded-To", "X-Original-To")
+
+
+def _is_protected_recipient(msg: Message, cfg: Config) -> str | None:
+    """Return the always_inbox address this message was sent to, if any.
+
+    Mirrors detect_form_lead's header sweep: a forwarder may carry the
+    original recipient in any of these, and Cloudflare Email Routing rewrites
+    To on the way through.
+    """
+    protected = set(cfg.mail.always_inbox)
+    if not protected:
+        return None
+    pairs = []
+    for header in _RECIPIENT_HEADERS:
+        pairs.extend(getaddresses([str(v) for v in msg.get_all(header, [])]))
+    for _, addr in pairs:
+        if addr and addr.strip().lower() in protected:
+            return addr.strip().lower()
+    return None
+
+
 def _label_for(c: Classification) -> str:
     if c.label == "client" and c.client:
         return f"Hermes/Client/{c.client}"
@@ -281,7 +303,15 @@ def process_message(
     )
     try:
         imap.apply_label(uid, label)
-        if classification.label == "promo":
+        protected = _is_protected_recipient(msg, cfg)
+        if protected:
+            # always_inbox outranks every archive path, including delete_promos.
+            # The message still carries its Hermes label; it just stays visible.
+            logger.info(
+                "uid={} addressed to {} (always_inbox) — keeping in inbox, label={}",
+                uid, protected, label,
+            )
+        elif classification.label == "promo":
             if cfg.mail.delete_promos:
                 imap.move_to_trash(uid)
             else:
