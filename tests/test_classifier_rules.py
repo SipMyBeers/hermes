@@ -218,3 +218,74 @@ def test_list_unsubscribe_still_beats_partner():
         partner_addrs={"magic@rainbowlasers.com"},
     )
     assert res.label == "promo"
+
+
+# ── Authentication mail (added after live misclassification) ──────────────────
+#
+# ⛔ THE BUG THIS PINS. Sign-in codes carried no transactional pattern at all, so they fell to the
+# LLM tier and were filed as promo, then archived out of the inbox. Real observation on real mail:
+# LootLens sign-in codes sat under Hermes/Promo and could not be found when needed. With
+# `delete_promos` defaulting True the same path can Trash a code that expires in ten minutes.
+
+_AUTH_SUBJECTS = [
+    "Your LootLens sign-in code",
+    "Your LootLens code: 462936",
+    "Your verification code",
+    "Your one-time code",
+    "2FA code",
+    "Password reset requested",
+    "Reset your password",
+    "Your magic link to sign in",
+    "Verify your email address",
+    "Security alert for your account",
+    "New sign-in from Chrome on Mac",
+]
+
+# Marketing that talks about codes and signing in. None of these may be caught.
+_MARKETING_SUBJECTS = [
+    "Sign in to see what's new",
+    "Use code SAVE20 at checkout",
+    "Your weekly digest is ready",
+    "Unlock 20% off today",
+    "New arrivals just landed",
+]
+
+
+@pytest.mark.parametrize("subject", _AUTH_SUBJECTS)
+def test_auth_subjects_are_transactional(subject):
+    r = classify(_make_msg("noreply@service.com", subject, "code inside"),
+                 client_domains={}, personal_allowlist=set())
+    assert r.label == "transactional", f"{subject!r} -> {r.label} ({r.reason})"
+
+
+@pytest.mark.parametrize("subject", _MARKETING_SUBJECTS)
+def test_marketing_subjects_are_not_transactional(subject):
+    # A guard that catches marketing is a guard that stops being trusted.
+    r = classify(_make_msg("noreply@service.com", subject, "shop now"),
+                 client_domains={}, personal_allowlist=set())
+    assert r.label != "transactional", f"{subject!r} wrongly caught ({r.reason})"
+
+
+def test_auth_beats_list_unsubscribe():
+    # The precedence that matters: a service attaching an unsubscribe header to its whole outbound
+    # stream must not be able to bury a one-time code.
+    raw = (
+        "From: noreply@service.com\r\nTo: dz@gmail.com\r\n"
+        "Subject: Your sign-in code\r\n"
+        "List-Unsubscribe: <https://service.com/unsub>\r\n"
+        "Date: Fri, 02 May 2026 10:00:00 +0000\r\nMessage-ID: <x@y>\r\n\r\n123456\r\n"
+    ).encode()
+    r = classify(message_from_bytes(raw), client_domains={}, personal_allowlist=set())
+    assert r.label == "transactional", r.reason
+
+
+def test_ordinary_promo_with_list_unsubscribe_is_untouched():
+    # The control for the reorder: normal marketing must still be promo.
+    raw = (
+        "From: news@shop.com\r\nTo: dz@gmail.com\r\n"
+        "Subject: Big weekend sale inside\r\n"
+        "List-Unsubscribe: <https://shop.com/unsub>\r\n"
+        "Date: Fri, 02 May 2026 10:00:00 +0000\r\nMessage-ID: <x@y>\r\n\r\nshop\r\n"
+    ).encode()
+    r = classify(message_from_bytes(raw), client_domains={}, personal_allowlist=set())
+    assert r.label == "promo", r.reason
