@@ -27,6 +27,14 @@ NOW = datetime.now(timezone.utc)
 # Senders that the classifier files as "client" but which are not clients:
 # our own products, carriers, registrars, and personal mail. Without this the
 # board's biggest "client" is bullpenlm.com, which is us.
+# Collaborators and channels. Mail from these is deal FLOW, not a client
+# relationship, and counting a partner as a client double-counts the work and
+# hides where the work is coming from.
+#   rainbowlasers.com  Magic / @magicology. Squarespace client access grants
+#                      arrive at magic@rainbowlasers.com, so this domain is the
+#                      channel the Squarespace work comes THROUGH.
+PARTNERS = {"rainbowlasers.com": "Magic (Squarespace access channel)"}
+
 NOT_CLIENTS = re.compile(
     # our own products
     r"(bullpenlm|beers\.cash|aurajam|lootlens|deedstash|killsesh|scopeweb|rollick"
@@ -155,6 +163,15 @@ def main():
         if monthly and d is not None and d > 30: owed += monthly
         print(f"  {name:<14} {age:>6}  {n:>5}  {fee:>8}  {state:<7} {nxt}")
 
+    part = [b for b in board if b[1] in PARTNERS]
+    if part:
+        print(f"\n  PARTNERS, who bring the work in")
+        print("  " + "-" * 84)
+        for name, dom, n, last, _, _, _ in part:
+            d = days(last)
+            print(f"  {dom:<28} {n:>4} msgs   last {d}d ago   {PARTNERS[dom]}")
+
+    cands = [c for c in cands if c[1] not in PARTNERS]
     if cands:
         print(f"\n  NOT ON THE ROSTER, but talking to us")
         print("  " + "-" * 84)
