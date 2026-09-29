@@ -64,6 +64,9 @@ class MailConfig:
     # sender and archived out of sight. Matched against To/Cc and the
     # forwarding headers; classification and labelling are unaffected.
     always_inbox: tuple[str, ...] = ()
+    # Sender domains that must never leave the inbox (marketplaces: a missed
+    # Fiverr/Upwork buyer message costs the order). Subdomains match too.
+    always_inbox_senders: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -202,7 +205,20 @@ def load_config(
                 f"got {type(raw_always).__name__}"
             )
         always_inbox = tuple(str(a).strip().lower() for a in raw_always if str(a).strip())
-        mail_cfg = MailConfig(delete_promos=delete_promos, always_inbox=always_inbox)
+        raw_senders = mail_section.get("always_inbox_senders", [])
+        if isinstance(raw_senders, str) or not isinstance(raw_senders, (list, tuple)):
+            raise ConfigError(
+                f"{secrets_path}:[mail] always_inbox_senders must be a list of domains, "
+                f"got {type(raw_senders).__name__}"
+            )
+        always_inbox_senders = tuple(
+            str(d).strip().lower().lstrip("@") for d in raw_senders if str(d).strip()
+        )
+        mail_cfg = MailConfig(
+            delete_promos=delete_promos,
+            always_inbox=always_inbox,
+            always_inbox_senders=always_inbox_senders,
+        )
     except ConfigError:
         raise
     except (TypeError, AttributeError) as e:

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.header import decode_header, make_header
 from email.message import Message
-from email.utils import getaddresses, parsedate_to_datetime
+from email.utils import getaddresses, parseaddr, parsedate_to_datetime
 from pathlib import Path
 import sqlite3
 import time
@@ -138,6 +138,19 @@ def _is_protected_recipient(msg: Message, cfg: Config) -> str | None:
     for _, addr in pairs:
         if addr and addr.strip().lower() in protected:
             return addr.strip().lower()
+    return None
+
+
+def _is_protected_sender(msg: Message, cfg: Config) -> str | None:
+    """Return the always_inbox_senders domain the From address belongs to, if any."""
+    domains = cfg.mail.always_inbox_senders
+    if not domains:
+        return None
+    _, addr = parseaddr(str(msg.get("From", "")))
+    host = addr.rpartition("@")[2].strip().lower()
+    for d in domains:
+        if host == d or host.endswith("." + d):
+            return d
     return None
 
 
@@ -303,7 +316,7 @@ def process_message(
     )
     try:
         imap.apply_label(uid, label)
-        protected = _is_protected_recipient(msg, cfg)
+        protected = _is_protected_recipient(msg, cfg) or _is_protected_sender(msg, cfg)
         if protected:
             # always_inbox outranks every archive path, including delete_promos.
             # The message still carries its Hermes label; it just stays visible.

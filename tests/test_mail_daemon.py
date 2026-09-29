@@ -905,3 +905,46 @@ def test_process_message_protected_client_mail_stays_in_inbox(tmp_path):
     cfg = replace(_cfg(), mail=MailConfig(delete_promos=False, always_inbox=("dylan@beers.cash",)))
     process_message(uid=34, msg=msg, db=db, cfg=cfg, imap=fake_imap, llm_classifier=None, drafter=None)
     fake_imap.archive.assert_not_called()
+
+
+# --- always_inbox_senders: marketplace mail (Fiverr, Upwork...) never leaves the inbox --
+# Fiverr sends buyer messages from its own domains, which the From-keyed rules read as
+# promo and archive. A missed buyer message costs the order and Fiverr's response rating.
+
+def _promo_from(sender: str):
+    msg = message_from_bytes((FIXTURES / "promo_amazon.eml").read_bytes())
+    del msg["From"]
+    msg["From"] = sender
+    return msg
+
+
+@pytest.mark.parametrize("sender", [
+    "Fiverr <noreply@fiverr.com>",
+    "Team@announce.fiverr.com",
+    "Upwork <donotreply@upwork.com>",
+])
+def test_process_message_keeps_protected_sender_domain_in_inbox(tmp_path, sender):
+    """A sender on an always_inbox_senders domain (or a subdomain) is labelled, never archived."""
+    from hermes.db import connect, migrate
+    db = connect(tmp_path / "t.sqlite")
+    migrate(db)
+    fake_imap = MagicMock()
+    cfg = replace(_cfg(), mail=MailConfig(
+        delete_promos=True, always_inbox_senders=("fiverr.com", "upwork.com")))
+    process_message(uid=40, msg=_promo_from(sender), db=db, cfg=cfg,
+                    imap=fake_imap, llm_classifier=None, drafter=None)
+    fake_imap.apply_label.assert_called_once()
+    fake_imap.archive.assert_not_called()
+    fake_imap.move_to_trash.assert_not_called()
+
+
+def test_process_message_lookalike_sender_domain_still_archives(tmp_path):
+    """notfiverr.com must not ride on fiverr.com's protection."""
+    from hermes.db import connect, migrate
+    db = connect(tmp_path / "t.sqlite")
+    migrate(db)
+    fake_imap = MagicMock()
+    cfg = replace(_cfg(), mail=MailConfig(delete_promos=False, always_inbox_senders=("fiverr.com",)))
+    process_message(uid=41, msg=_promo_from("deals@notfiverr.com"), db=db, cfg=cfg,
+                    imap=fake_imap, llm_classifier=None, drafter=None)
+    fake_imap.archive.assert_called_once_with(41)
